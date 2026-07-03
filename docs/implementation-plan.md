@@ -351,16 +351,16 @@ Exit criteria:
 
 ### Stage 2: Native Window and Input Shell
 
-Status: `[ ]`
+Status: `[x]`
 
 Tasks:
 
-- [ ] Create SDL3 window with OpenGL context.
-- [ ] Implement main loop.
-- [ ] Handle resize, DPI scale, quit, keyboard, mouse, wheel.
-- [ ] Implement drag/drop for torrent files and dropped text.
-- [ ] Implement clipboard paste for magnet links.
-- [ ] Implement native file picker with `.torrent` filter.
+- [x] Create SDL3 window with OpenGL context.
+- [x] Implement main loop.
+- [x] Handle resize, DPI scale, quit, keyboard, mouse, wheel.
+- [x] Implement drag/drop for torrent files and dropped text.
+- [x] Implement clipboard paste for magnet links.
+- [x] Implement native file picker with `.torrent` filter.
 
 Exit criteria:
 
@@ -368,16 +368,16 @@ Exit criteria:
 
 ### Stage 3: Clay UI Foundation
 
-Status: `[ ]`
+Status: `[~]`
 
 Tasks:
 
-- [ ] Initialize Clay arena and error handling.
-- [ ] Implement OpenGL renderer for core Clay primitives.
-- [ ] Add font loading and text measurement.
-- [ ] Implement input hit testing and widget state.
-- [ ] Build base components: button, text input, list row, scroll region, slider, toggle, menu.
-- [ ] Build title/input screen.
+- [x] Initialize Clay arena and error handling.
+- [x] Implement ThorVG/OpenGL renderer for core Clay primitives.
+- [x] Add font loading and text measurement.
+- [x] Implement input hit testing and widget state for the title screen.
+- [~] Build base components: button, text input, list row, scroll region, slider, toggle, menu.
+- [x] Build title/input screen.
 
 Exit criteria:
 
@@ -385,16 +385,16 @@ Exit criteria:
 
 ### Stage 4: libmpv Local Playback Prototype
 
-Status: `[ ]`
+Status: `[x]`
 
 Tasks:
 
-- [ ] Create `MpvPlayer`.
-- [ ] Initialize mpv with embedded-friendly options.
-- [ ] Create mpv OpenGL render context.
-- [ ] Render local video into app window.
-- [ ] Add basic play/pause/seek/volume/fullscreen controls.
-- [ ] Observe `time-pos`, `duration`, `pause`, `eof-reached`, and track properties.
+- [x] Create `MpvPlayer`.
+- [x] Initialize mpv with embedded-friendly options.
+- [x] Create mpv OpenGL render context.
+- [x] Render local video into app window.
+- [x] Add basic play/pause/seek/volume/fullscreen controls.
+- [x] Observe `time-pos`, `duration`, `pause`, `eof-reached`, and track properties.
 
 Exit criteria:
 

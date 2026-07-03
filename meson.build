@@ -41,10 +41,56 @@ else
   endif
 endif
 
-mpv_dep = dependency('mpv', required: get_option('mpv'))
+mpv_dep = dependency('', required: false)
+if get_option('mpv').allowed()
+  mpv_proj = subproject(
+    'mpv',
+    default_options: [
+      'default_library=static',
+      'libmpv=true',
+      'cplayer=false',
+      'tests=false',
+      'build-date=false',
+      'lua=disabled',
+      'javascript=disabled',
+      'libavdevice=disabled',
+      'vapoursynth=disabled',
+      'plain-gl=enabled',
+    ],
+    required: get_option('mpv'),
+  )
+  if mpv_proj.found()
+    mpv_dep = mpv_proj.get_variable('libmpv_dep')
+  endif
+endif
 libtorrent_dep = dependency('libtorrent-rasterbar', required: get_option('libtorrent'))
 freetype_dep = dependency('freetype2', required: get_option('freetype'))
 fontconfig_dep = dependency('fontconfig', required: get_option('fontconfig'))
+
+thorvg_dep = dependency('thorvg-1', required: false)
+if not thorvg_dep.found() and get_option('thorvg').allowed()
+  thorvg_proj = subproject(
+    'thorvg',
+    default_options: [
+      'default_library=static',
+      'engines=gl',
+      'loaders=svg,ttf',
+      'savers=',
+      'tools=',
+      'tests=false',
+      'bindings=',
+      'threads=false',
+      'simd=false',
+      'extra=',
+      'static=true',
+      'file=true',
+    ],
+    required: get_option('thorvg'),
+  )
+  if thorvg_proj.found()
+    thorvg_dep = thorvg_proj.get_variable('thorvg_dep')
+  endif
+endif
 
 clay_dep = declare_dependency(
   include_directories: include_directories('third_party/clay', is_system: true),
@@ -56,7 +102,7 @@ torrview_deps = [
   clay_dep,
 ]
 
-foreach dep : [mpv_dep, libtorrent_dep, freetype_dep, fontconfig_dep]
+foreach dep : [mpv_dep, libtorrent_dep, freetype_dep, fontconfig_dep, thorvg_dep]
   if dep.found()
     torrview_deps += dep
   endif
@@ -64,10 +110,13 @@ endforeach
 
 config = configuration_data()
 config.set_quoted('TORRVIEW_VERSION', meson.project_version())
+config.set_quoted('TORRVIEW_FONT_PATH', meson.project_source_root() / 'assets' / 'fonts' / 'NotoSans-Regular.ttf')
+config.set_quoted('TORRVIEW_ICON_DIR', meson.project_source_root() / 'assets' / 'icons')
 config.set('TORRVIEW_HAVE_MPV', mpv_dep.found())
 config.set('TORRVIEW_HAVE_LIBTORRENT', libtorrent_dep.found())
 config.set('TORRVIEW_HAVE_FREETYPE', freetype_dep.found())
 config.set('TORRVIEW_HAVE_FONTCONFIG', fontconfig_dep.found())
+config.set('TORRVIEW_HAVE_THORVG', thorvg_dep.found())
 
 configure_file(
   input: 'src/config.hpp.in',
@@ -87,4 +136,5 @@ summary({
   'libtorrent-rasterbar': libtorrent_dep.found(),
   'FreeType': freetype_dep.found(),
   'Fontconfig': fontconfig_dep.found(),
+  'ThorVG': thorvg_dep.found(),
 }, section: 'Dependencies')

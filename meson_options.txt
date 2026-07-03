@@ -1,4 +1,5 @@
-option('mpv', type: 'feature', value: 'auto', description: 'Discover and link libmpv when available')
+option('mpv', type: 'feature', value: 'enabled', description: 'Build and statically link libmpv from the mpv Meson subproject')
 option('libtorrent', type: 'feature', value: 'auto', description: 'Discover and link libtorrent-rasterbar when available')
 option('freetype', type: 'feature', value: 'auto', description: 'Discover and link FreeType when available')
 option('fontconfig', type: 'feature', value: 'auto', description: 'Discover and link Fontconfig when available')
+option('thorvg', type: 'feature', value: 'enabled', description: 'Build and link ThorVG from subprojects for UI text rendering')

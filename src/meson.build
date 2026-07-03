@@ -1,6 +1,13 @@
 torrview_sources = files(
+  'app.cpp',
   'clay.cpp',
+  'input_source.cpp',
   'main.cpp',
+  'mpv_player.cpp',
+  'sdl_event_manager.cpp',
+  'ui/clay_renderer.cpp',
+  'ui/player_overlay.cpp',
+  'ui/title_page.cpp',
 )
 
 executable(
