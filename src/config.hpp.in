@@ -1,0 +1,8 @@
+#pragma once
+
+#define TORRVIEW_VERSION @TORRVIEW_VERSION@
+
+#mesondefine TORRVIEW_HAVE_MPV
+#mesondefine TORRVIEW_HAVE_LIBTORRENT
+#mesondefine TORRVIEW_HAVE_FREETYPE
+#mesondefine TORRVIEW_HAVE_FONTCONFIG

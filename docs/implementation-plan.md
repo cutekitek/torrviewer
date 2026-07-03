@@ -335,15 +335,15 @@ Exit criteria:
 
 ### Stage 1: Project Scaffold
 
-Status: `[ ]`
+Status: `[x]`
 
 Tasks:
 
-- [ ] Create Meson project structure.
-- [ ] Add dependency discovery for SDL3, OpenGL, libmpv, libtorrent, and fonts.
-- [ ] Vendor or submodule Clay.
-- [ ] Add formatting/linting conventions.
-- [ ] Add minimal CI or local build script.
+- [x] Create Meson project structure.
+- [x] Add dependency discovery for SDL3, OpenGL, libmpv, libtorrent, and fonts.
+- [x] Vendor or submodule Clay.
+- [x] Add formatting/linting conventions.
+- [x] Add minimal CI or local build script.
 
 Exit criteria:
 
