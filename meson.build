@@ -157,6 +157,16 @@ config_inc = include_directories('.')
 
 subdir('src')
 
+if libtorrent_dep.found()
+  memory_disk_io_test = executable(
+    'memory_disk_io_test',
+    files('tests/memory_disk_io_test.cpp', 'src/memory_disk_io.cpp'),
+    dependencies: libtorrent_dep,
+    include_directories: [config_inc, include_directories('src')],
+  )
+  test('memory_disk_io', memory_disk_io_test)
+endif
+
 summary({
   'SDL3': sdl3_dep.found(),
   'OpenGL': opengl_dep.found(),

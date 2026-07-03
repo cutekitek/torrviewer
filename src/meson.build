@@ -3,6 +3,7 @@ torrview_sources = files(
   'clay.cpp',
   'input_source.cpp',
   'main.cpp',
+  'memory_disk_io.cpp',
   'mpv_player.cpp',
   'sdl_event_manager.cpp',
   'torrent_service.cpp',

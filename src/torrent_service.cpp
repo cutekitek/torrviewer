@@ -2,6 +2,7 @@
 
 #include "config.hpp"
 #include "input_source.hpp"
+#include "memory_disk_io.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -73,11 +74,20 @@ lt::settings_pack make_session_settings() {
   settings.set_bool(lt::settings_pack::enable_upnp, false);
   settings.set_bool(lt::settings_pack::enable_natpmp, false);
   settings.set_int(lt::settings_pack::connections_limit, 80);
+  settings.set_int(lt::settings_pack::upload_rate_limit, 1);
+  settings.set_int(lt::settings_pack::unchoke_slots_limit, 0);
+  settings.set_int(lt::settings_pack::num_optimistic_unchoke_slots, 0);
   settings.set_int(lt::settings_pack::alert_mask,
                    lt::alert_category::error | lt::alert_category::status |
                        lt::alert_category::tracker | lt::alert_category::dht |
                        lt::alert_category::peer);
   return settings;
+}
+
+lt::session_params make_session_params() {
+  lt::session_params params(make_session_settings());
+  params.disk_io_constructor = create_memory_disk_io;
+  return params;
 }
 
 std::vector<TorrentFileInfo> extract_files(const lt::torrent_info& info) {
@@ -163,7 +173,7 @@ const char* libtorrent_state_label(lt::torrent_status::state_t state) {
 #if defined(TORRVIEW_HAVE_LIBTORRENT)
 class TorrentService::Impl final {
 public:
-  Impl() : session_(lt::session_params(make_session_settings())) {
+  Impl() : session_(make_session_params()) {
     snapshot_.available = true;
     snapshot_.state = TorrentLoadState::idle;
     snapshot_.status = "Ready";

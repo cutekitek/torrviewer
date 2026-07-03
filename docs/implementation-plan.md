@@ -426,17 +426,17 @@ Implementation note:
 
 ### Stage 6: RAM Disk Interface Prototype
 
-Status: `[ ]`
+Status: `[x]`
 
 Tasks:
 
-- [ ] Implement `MemoryDiskIO` from libtorrent `disk_interface`.
-- [ ] Store incoming blocks in RAM by storage index and piece index.
-- [ ] Implement reads from RAM.
-- [ ] Implement v1 SHA-1 and v2 SHA-256 hash paths.
-- [ ] Implement status, delete, release, stop, and no-op move/rename behavior.
-- [ ] Track memory usage.
-- [ ] Add test torrent fixture or local integration test.
+- [x] Implement `MemoryDiskIO` from libtorrent `disk_interface`.
+- [x] Store incoming blocks in RAM by storage index and piece index.
+- [x] Implement reads from RAM.
+- [x] Implement v1 SHA-1 and v2 SHA-256 hash paths.
+- [x] Implement status, delete, release, stop, and no-op move/rename behavior.
+- [x] Track memory usage.
+- [x] Add test torrent fixture or local integration test.
 
 Exit criteria:
 
