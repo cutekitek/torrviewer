@@ -18,6 +18,8 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -25,6 +27,9 @@ namespace torrview {
 namespace lt = libtorrent;
 
 namespace {
+
+std::mutex registry_mutex;
+std::vector<MemoryDiskIO*> registry;
 
 struct WriteRange {
   int begin = 0;
@@ -86,7 +91,44 @@ struct MemoryPiece {
 
 class MemoryTorrentStorage final {
 public:
-  explicit MemoryTorrentStorage(const lt::file_storage& files) : files_(files) {}
+  MemoryTorrentStorage(const lt::file_storage& files, CachePolicy policy)
+      : files_(files), policy_(normalize_cache_policy(policy)) {}
+
+  void set_cache_policy(CachePolicy policy) { policy_ = normalize_cache_policy(policy); }
+
+  [[nodiscard]] CachePolicy cache_policy() const { return policy_; }
+
+  [[nodiscard]] PieceWindow update_retained_window(std::int64_t torrent_byte_offset) {
+    retained_window_ = compute_retained_piece_window(torrent_byte_offset, total_pieces(),
+                                                     files_.piece_length(), policy_);
+    return *retained_window_;
+  }
+
+  void set_retained_window(PieceWindow window) {
+    window.first_piece = std::clamp(window.first_piece, 0, total_pieces());
+    window.end_piece = std::clamp(window.end_piece, window.first_piece, total_pieces());
+    retained_window_ = window;
+  }
+
+  void clear_retained_window() { retained_window_.reset(); }
+
+  [[nodiscard]] MemoryDiskCacheStatus cache_status(std::int64_t bytes_used) const {
+    MemoryDiskCacheStatus status;
+    status.bytes_used = bytes_used;
+    status.policy = policy_;
+    status.has_retained_window = retained_window_.has_value();
+    if (retained_window_.has_value()) {
+      status.retained_window = *retained_window_;
+    }
+    status.evicted_pieces = static_cast<int>(evicted_pieces_.size());
+    status.evicted_piece_indices.reserve(evicted_pieces_.size());
+    for (lt::piece_index_t piece : evicted_pieces_) {
+      status.evicted_piece_indices.push_back(static_cast<int>(piece));
+    }
+    status.evicted_read_misses = evicted_read_misses_;
+    status.missing_read_misses = missing_read_misses_;
+    return status;
+  }
 
   [[nodiscard]] std::int64_t write(const lt::peer_request& request, char const* buffer,
                                    lt::storage_error& error) {
@@ -101,6 +143,7 @@ public:
 
     const int size = piece_size(request.piece);
     MemoryPiece& piece = pieces_[request.piece];
+    evicted_pieces_.erase(request.piece);
     std::int64_t allocated = 0;
     if (piece.bytes.empty()) {
       piece.bytes.resize(static_cast<std::size_t>(size));
@@ -115,7 +158,7 @@ public:
 
   [[nodiscard]] lt::disk_buffer_holder read(const lt::peer_request& request,
                                             lt::buffer_allocator_interface& allocator,
-                                            lt::storage_error& error) const {
+                                            lt::storage_error& error) {
     if (!valid_request(request, error, lt::operation_t::file_read)) {
       return {};
     }
@@ -123,6 +166,7 @@ public:
     auto found = pieces_.find(request.piece);
     if (found == pieces_.end() ||
         !covers_range(found->second.written, request.start, request.start + request.length)) {
+      record_miss(request.piece);
       error = make_eof_error(lt::operation_t::file_read);
       return {};
     }
@@ -136,7 +180,7 @@ public:
 
   [[nodiscard]] lt::sha1_hash hash(lt::piece_index_t piece,
                                    lt::span<lt::sha256_hash> block_hashes,
-                                   lt::disk_job_flags_t flags, lt::storage_error& error) const {
+                                   lt::disk_job_flags_t flags, lt::storage_error& error) {
     const MemoryPiece* data = full_piece(piece, error, lt::operation_t::file_read);
     if (data == nullptr) {
       return {};
@@ -163,7 +207,7 @@ public:
   }
 
   [[nodiscard]] lt::sha256_hash hash2(lt::piece_index_t piece, int offset,
-                                      lt::storage_error& error) const {
+                                      lt::storage_error& error) {
     const int size = piece_size(piece);
     if (offset < 0 || offset >= size) {
       error = make_storage_error(boost::system::errc::invalid_argument,
@@ -174,6 +218,7 @@ public:
     const int length = std::min(lt::default_block_size, size - offset);
     auto found = pieces_.find(piece);
     if (found == pieces_.end() || !covers_range(found->second.written, offset, offset + length)) {
+      record_miss(piece);
       error = make_eof_error(lt::operation_t::file_read);
       return {};
     }
@@ -189,6 +234,7 @@ public:
     }
     const std::int64_t released = static_cast<std::int64_t>(found->second.bytes.size());
     pieces_.erase(found);
+    evicted_pieces_.insert(piece);
     return released;
   }
 
@@ -199,11 +245,48 @@ public:
       released += static_cast<std::int64_t>(data.bytes.size());
     }
     pieces_.clear();
+    evicted_pieces_.clear();
+    evicted_read_misses_ = 0;
+    missing_read_misses_ = 0;
+    return released;
+  }
+
+  [[nodiscard]] std::int64_t evict_to_fit(std::int64_t current_bytes) {
+    if (!retained_window_.has_value() || current_bytes <= policy_.max_bytes) {
+      return 0;
+    }
+
+    std::int64_t released = 0;
+    for (auto piece = pieces_.begin();
+         piece != pieces_.end() && current_bytes - released > policy_.max_bytes;) {
+      if (retained_window_->contains(piece_to_int(piece->first))) {
+        ++piece;
+        continue;
+      }
+
+      released += static_cast<std::int64_t>(piece->second.bytes.size());
+      evicted_pieces_.insert(piece->first);
+      piece = pieces_.erase(piece);
+    }
     return released;
   }
 
 private:
   [[nodiscard]] int piece_size(lt::piece_index_t piece) const { return files_.piece_size(piece); }
+
+  [[nodiscard]] int total_pieces() const { return static_cast<int>(files_.end_piece()); }
+
+  [[nodiscard]] int piece_to_int(lt::piece_index_t piece) const {
+    return static_cast<int>(piece);
+  }
+
+  void record_miss(lt::piece_index_t piece) {
+    if (evicted_pieces_.find(piece) != evicted_pieces_.end()) {
+      ++evicted_read_misses_;
+    } else {
+      ++missing_read_misses_;
+    }
+  }
 
   [[nodiscard]] bool valid_request(const lt::peer_request& request, lt::storage_error& error,
                                    lt::operation_t operation) const {
@@ -222,7 +305,7 @@ private:
   }
 
   [[nodiscard]] const MemoryPiece* full_piece(lt::piece_index_t piece, lt::storage_error& error,
-                                              lt::operation_t operation) const {
+                                              lt::operation_t operation) {
     if (piece < lt::piece_index_t{0} || piece >= files_.end_piece()) {
       error = make_storage_error(boost::system::errc::invalid_argument, operation);
       return nullptr;
@@ -230,6 +313,7 @@ private:
 
     auto found = pieces_.find(piece);
     if (found == pieces_.end() || !covers_range(found->second.written, 0, piece_size(piece))) {
+      record_miss(piece);
       error = make_eof_error(operation);
       return nullptr;
     }
@@ -237,7 +321,12 @@ private:
   }
 
   lt::file_storage files_;
+  CachePolicy policy_;
+  std::optional<PieceWindow> retained_window_;
   std::map<lt::piece_index_t, MemoryPiece> pieces_;
+  std::set<lt::piece_index_t> evicted_pieces_;
+  std::int64_t evicted_read_misses_ = 0;
+  std::int64_t missing_read_misses_ = 0;
 };
 
 lt::storage_index_t pop_slot(std::vector<lt::storage_index_t>& slots) {
@@ -257,12 +346,72 @@ public:
     return bytes_used_;
   }
 
+  [[nodiscard]] CachePolicy cache_policy() const {
+    std::lock_guard lock(mutex_);
+    return policy_;
+  }
+
+  void set_cache_policy(CachePolicy policy) {
+    std::lock_guard lock(mutex_);
+    policy_ = normalize_cache_policy(policy);
+    for (auto& storage : storages_) {
+      if (storage != nullptr) {
+        storage->set_cache_policy(policy_);
+      }
+    }
+    enforce_cache_locked();
+  }
+
+  [[nodiscard]] PieceWindow update_retained_window(lt::storage_index_t index,
+                                                   std::int64_t torrent_byte_offset) {
+    std::lock_guard lock(mutex_);
+    MemoryTorrentStorage* storage = find_storage_locked(index);
+    if (storage == nullptr) {
+      return {};
+    }
+
+    PieceWindow window = storage->update_retained_window(torrent_byte_offset);
+    enforce_cache_locked();
+    return window;
+  }
+
+  void set_retained_window(lt::storage_index_t index, PieceWindow window) {
+    std::lock_guard lock(mutex_);
+    MemoryTorrentStorage* storage = find_storage_locked(index);
+    if (storage == nullptr) {
+      return;
+    }
+
+    storage->set_retained_window(window);
+    enforce_cache_locked();
+  }
+
+  void clear_retained_window(lt::storage_index_t index) {
+    std::lock_guard lock(mutex_);
+    MemoryTorrentStorage* storage = find_storage_locked(index);
+    if (storage != nullptr) {
+      storage->clear_retained_window();
+    }
+  }
+
+  [[nodiscard]] MemoryDiskCacheStatus cache_status(lt::storage_index_t index) const {
+    std::lock_guard lock(mutex_);
+    const MemoryTorrentStorage* storage = find_storage_locked(index);
+    if (storage == nullptr) {
+      MemoryDiskCacheStatus status;
+      status.bytes_used = bytes_used_;
+      status.policy = policy_;
+      return status;
+    }
+    return storage->cache_status(bytes_used_);
+  }
+
   lt::storage_holder new_torrent(lt::storage_params const& params, lt::disk_interface& owner) {
     std::lock_guard lock(mutex_);
     const lt::storage_index_t index =
         free_slots_.empty() ? storages_.end_index() : pop_slot(free_slots_);
 
-    auto storage = std::make_unique<MemoryTorrentStorage>(params.files);
+    auto storage = std::make_unique<MemoryTorrentStorage>(params.files, policy_);
     if (index == storages_.end_index()) {
       storages_.emplace_back(std::move(storage));
     } else {
@@ -309,6 +458,9 @@ public:
       std::lock_guard lock(mutex_);
       if (MemoryTorrentStorage* storage = find_storage_locked(index); storage != nullptr) {
         bytes_used_ += storage->write(request, buffer, error);
+        if (!error) {
+          enforce_cache_locked();
+        }
       } else {
         error = make_storage_error(boost::system::errc::no_such_file_or_directory,
                                    lt::operation_t::file_write);
@@ -398,19 +550,71 @@ private:
     return storages_[index].get();
   }
 
+  [[nodiscard]] const MemoryTorrentStorage* find_storage_locked(lt::storage_index_t index) const {
+    if (index < lt::storage_index_t{0} || index >= storages_.end_index()) {
+      return nullptr;
+    }
+    return storages_[index].get();
+  }
+
+  void enforce_cache_locked() {
+    if (bytes_used_ <= policy_.max_bytes) {
+      return;
+    }
+
+    for (auto& storage : storages_) {
+      if (storage == nullptr) {
+        continue;
+      }
+      const std::int64_t released = storage->evict_to_fit(bytes_used_);
+      bytes_used_ -= released;
+      if (bytes_used_ <= policy_.max_bytes) {
+        break;
+      }
+    }
+  }
+
   lt::io_context& io_context_;
   mutable std::mutex mutex_;
   lt::aux::vector<std::unique_ptr<MemoryTorrentStorage>, lt::storage_index_t> storages_;
   std::vector<lt::storage_index_t> free_slots_;
+  CachePolicy policy_;
   std::int64_t bytes_used_ = 0;
 };
 
 MemoryDiskIO::MemoryDiskIO(lt::io_context& io_context)
-    : impl_(std::make_unique<Impl>(io_context)) {}
+    : impl_(std::make_unique<Impl>(io_context)) {
+  std::lock_guard lock(registry_mutex);
+  registry.push_back(this);
+}
 
-MemoryDiskIO::~MemoryDiskIO() = default;
+MemoryDiskIO::~MemoryDiskIO() {
+  std::lock_guard lock(registry_mutex);
+  registry.erase(std::remove(registry.begin(), registry.end(), this), registry.end());
+}
 
 std::int64_t MemoryDiskIO::bytes_used() const { return impl_->bytes_used(); }
+
+CachePolicy MemoryDiskIO::cache_policy() const { return impl_->cache_policy(); }
+
+void MemoryDiskIO::set_cache_policy(CachePolicy policy) { impl_->set_cache_policy(policy); }
+
+PieceWindow MemoryDiskIO::update_retained_window(lt::storage_index_t storage,
+                                                 std::int64_t torrent_byte_offset) {
+  return impl_->update_retained_window(storage, torrent_byte_offset);
+}
+
+void MemoryDiskIO::set_retained_window(lt::storage_index_t storage, PieceWindow window) {
+  impl_->set_retained_window(storage, window);
+}
+
+void MemoryDiskIO::clear_retained_window(lt::storage_index_t storage) {
+  impl_->clear_retained_window(storage);
+}
+
+MemoryDiskCacheStatus MemoryDiskIO::cache_status(lt::storage_index_t storage) const {
+  return impl_->cache_status(storage);
+}
 
 lt::storage_holder MemoryDiskIO::new_torrent(lt::storage_params const& params,
                                              std::shared_ptr<void> const&) {
@@ -519,6 +723,37 @@ std::unique_ptr<lt::disk_interface> create_memory_disk_io(lt::io_context& io_con
                                                           lt::settings_interface const&,
                                                           lt::counters&) {
   return std::make_unique<MemoryDiskIO>(io_context);
+}
+
+void set_memory_disk_cache_policy(CachePolicy policy) {
+  std::lock_guard lock(registry_mutex);
+  for (MemoryDiskIO* disk : registry) {
+    if (disk != nullptr) {
+      disk->set_cache_policy(policy);
+    }
+  }
+}
+
+PieceWindow update_memory_disk_retained_window(std::int64_t torrent_byte_offset) {
+  std::lock_guard lock(registry_mutex);
+  PieceWindow window;
+  for (MemoryDiskIO* disk : registry) {
+    if (disk != nullptr) {
+      window = disk->update_retained_window(lt::storage_index_t{0}, torrent_byte_offset);
+    }
+  }
+  return window;
+}
+
+MemoryDiskCacheStatus memory_disk_cache_status() {
+  std::lock_guard lock(registry_mutex);
+  MemoryDiskCacheStatus status;
+  for (MemoryDiskIO* disk : registry) {
+    if (disk != nullptr) {
+      status = disk->cache_status(lt::storage_index_t{0});
+    }
+  }
+  return status;
 }
 
 } // namespace torrview

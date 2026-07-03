@@ -1,7 +1,8 @@
 #include "app.hpp"
 
+#include "logger.hpp"
+
 #include <exception>
-#include <iostream>
 
 int main(int argc, char** argv) {
   (void)argc;
@@ -12,7 +13,7 @@ int main(int argc, char** argv) {
     app.initialize();
     app.run();
   } catch (const std::exception& error) {
-    std::cerr << error.what() << '\n';
+    TORRVIEW_LOG_ERROR(error.what());
     return 1;
   }
 

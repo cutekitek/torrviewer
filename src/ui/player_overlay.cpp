@@ -3,6 +3,7 @@
 #include "config.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <iomanip>
@@ -88,6 +89,7 @@ void PlayerOverlay::initialize_ids() {
 void PlayerOverlay::begin_frame() {
   frame_strings_.clear();
   audio_track_row_ids_.clear();
+  cache_preset_ids_.clear();
 }
 
 std::string_view PlayerOverlay::retain_frame_text(std::string value) {
@@ -178,8 +180,20 @@ void PlayerOverlay::audio_track_row(Clay_ElementId id, std::string_view label, b
   }
 }
 
+void PlayerOverlay::cache_preset_button(Clay_ElementId id, int mib, bool active) {
+  const Clay_Color background = active ? color_button_emphasis : color_button;
+  CLAY(id,
+       {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(54.0F),
+                              .height = CLAY_SIZING_FIXED(28.0F)},
+                   .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+        .backgroundColor = background,
+        .cornerRadius = CLAY_CORNER_RADIUS(5.0F)}) {
+    text(retain_frame_text(std::to_string(mib)), 12, color_text, CLAY_TEXT_WRAP_NONE);
+  }
+}
+
 void PlayerOverlay::build(const WindowMetrics& metrics, const PlaybackSnapshot& snapshot,
-                          bool fullscreen, bool controls_visible) {
+                          bool fullscreen, bool controls_visible, int cache_limit_mib) {
   const float width = static_cast<float>(metrics.logical_width);
   const float height = static_cast<float>(metrics.logical_height);
   if (!controls_visible) {
@@ -212,7 +226,8 @@ void PlayerOverlay::build(const WindowMetrics& metrics, const PlaybackSnapshot& 
   const bool show_audio_menu = audio_menu_open_ && !snapshot.audio_track_list.empty();
   const int visible_audio_rows =
       show_audio_menu ? static_cast<int>(snapshot.audio_track_list.size()) : 0;
-  constexpr float panel_height = 150.0F;
+  constexpr float panel_height = 188.0F;
+  constexpr std::array<int, 4> cache_presets = {64, 128, 256, 512};
 
   CLAY(CLAY_ID("PlayerOverlayRoot"),
        {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F), .height = CLAY_SIZING_GROW(0.0F)},
@@ -293,6 +308,23 @@ void PlayerOverlay::build(const WindowMetrics& metrics, const PlaybackSnapshot& 
         icon_button(stop_id_, Icon::close);
       }
 
+      CLAY(CLAY_ID("PlayerCacheRow"),
+           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
+                                  .height = CLAY_SIZING_FIXED(30.0F)},
+                       .childGap = 8,
+                       .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
+        text("Cache", 12, color_muted, CLAY_TEXT_WRAP_NONE);
+        for (std::size_t index = 0; index < cache_presets.size(); ++index) {
+          const Clay_ElementId preset_id =
+              Clay_GetElementIdWithIndex(CLAY_STRING("PlayerCachePreset"),
+                                         static_cast<uint32_t>(index));
+          cache_preset_ids_.push_back(preset_id);
+          cache_preset_button(preset_id, cache_presets[index],
+                              cache_limit_mib == cache_presets[index]);
+        }
+        text("MiB", 12, color_muted, CLAY_TEXT_WRAP_NONE);
+      }
+
       if (show_audio_menu) {
         CLAY(audio_menu_id_,
              {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(320.0F),
@@ -357,6 +389,15 @@ PlayerOverlayAction PlayerOverlay::hit_test_click() {
       return PlayerOverlayAction::select_audio_track;
     }
   }
+  constexpr std::array<int, 4> cache_presets = {64, 128, 256, 512};
+  for (std::size_t index = 0;
+       index < cache_preset_ids_.size() && index < cache_presets.size(); ++index) {
+    if (Clay_PointerOver(cache_preset_ids_[index])) {
+      selected_cache_size_mib_ = cache_presets[index];
+      audio_menu_open_ = false;
+      return PlayerOverlayAction::set_cache_size;
+    }
+  }
   if (Clay_PointerOver(fullscreen_id_)) {
     audio_menu_open_ = false;
     return PlayerOverlayAction::fullscreen;
@@ -390,6 +431,8 @@ bool PlayerOverlay::pointer_over_controls() const {
 std::size_t PlayerOverlay::selected_audio_track_index() const {
   return selected_audio_track_index_;
 }
+
+int PlayerOverlay::selected_cache_size_mib() const { return selected_cache_size_mib_; }
 
 void PlayerOverlay::close_audio_menu() { audio_menu_open_ = false; }
 

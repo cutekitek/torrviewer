@@ -1,6 +1,7 @@
 #include "app.hpp"
 
 #include "config.hpp"
+#include "logger.hpp"
 
 #include <thorvg.h>
 
@@ -8,7 +9,6 @@
 #include <cstdint>
 #include <exception>
 #include <fstream>
-#include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -169,7 +169,7 @@ void Application::initialize() {
   }
 
   if (!SDL_GL_SetSwapInterval(1)) {
-    std::cerr << "Warning: SDL_GL_SetSwapInterval failed: " << SDL_GetError() << '\n';
+    TORRVIEW_LOG_WARNING("SDL_GL_SetSwapInterval failed: " << SDL_GetError());
   }
 
   update_window_metrics();
@@ -177,6 +177,8 @@ void Application::initialize() {
   initialize_text_renderer();
   initialize_clay();
   player_ = std::make_unique<MpvPlayer>();
+  player_->set_torrent_stream_provider(&torrent_service_);
+  torrent_service_.set_cache_limit_mib(cache_limit_mib_);
   if (player_->available()) {
     player_->initialize();
   }
@@ -188,7 +190,7 @@ void Application::initialize() {
   SDL_SetEventEnabled(SDL_EVENT_DROP_POSITION, true);
 
   if (!SDL_StartTextInput(window_)) {
-    std::cerr << "Warning: SDL_StartTextInput failed: " << SDL_GetError() << '\n';
+    TORRVIEW_LOG_WARNING("SDL_StartTextInput failed: " << SDL_GetError());
   }
 
   update_window_title();
@@ -417,7 +419,7 @@ void Application::show_open_source_dialog() {
 void Application::paste_clipboard() {
   char* clipboard = SDL_GetClipboardText();
   if (clipboard == nullptr) {
-    std::cerr << "Clipboard paste failed: " << SDL_GetError() << '\n';
+    TORRVIEW_LOG_ERROR("Clipboard paste failed: " << SDL_GetError());
     return;
   }
 
@@ -440,7 +442,7 @@ void Application::consume_dialog_results() {
   }
 
   for (const std::string& error : errors) {
-    std::cerr << "Open file dialog failed: " << error << '\n';
+    TORRVIEW_LOG_ERROR("Open file dialog failed: " << error);
   }
 
   for (const std::string& path : paths) {
@@ -458,14 +460,14 @@ void Application::accept_input(ParsedInput input) {
     torrent_service_.reset();
     selected_torrent_file_index_.reset();
     if (player_ == nullptr || !player_->available()) {
-      std::cerr << "Local playback requires libmpv, but this build was configured without it.\n";
+      TORRVIEW_LOG_ERROR("Local playback requires libmpv, but this build was configured without it");
     } else {
       try {
         player_->load_file(last_input_->value);
         player_controls_visible_ = true;
         player_controls_last_hover_ = Clock::now();
       } catch (const std::exception& error) {
-        std::cerr << "Local playback failed: " << error.what() << '\n';
+        TORRVIEW_LOG_ERROR("Local playback failed: " << error.what());
       }
     }
   } else if (last_input_->kind == InputKind::torrent_file ||
@@ -481,15 +483,15 @@ void Application::accept_input(ParsedInput input) {
         torrent_service_.load_magnet(last_input_->value);
       }
     } catch (const std::exception& error) {
-      std::cerr << "Torrent metadata load failed: " << error.what() << '\n';
+      TORRVIEW_LOG_ERROR("Torrent metadata load failed: " << error.what());
     }
   } else {
     torrent_service_.reset();
     selected_torrent_file_index_.reset();
   }
 
-  std::cout << "Input: " << input_kind_label(last_input_->kind) << " - "
-            << compact_value(last_input_->value) << '\n';
+  TORRVIEW_LOG_INFO("Input: " << input_kind_label(last_input_->kind) << " - "
+                              << compact_value(last_input_->value));
   update_window_title();
 }
 
@@ -500,8 +502,23 @@ void Application::handle_file_browser_click() {
     break;
   case ui::FileBrowserAction::select_file:
     selected_torrent_file_index_ = file_browser_page_.selected_file_index();
-    std::cout << "Selected torrent file index " << *selected_torrent_file_index_
-              << " for a future torrent stream.\n";
+    TORRVIEW_LOG_INFO("Selected torrent file index " << *selected_torrent_file_index_);
+    if (player_ == nullptr || !player_->available()) {
+      TORRVIEW_LOG_ERROR("Torrent playback requires libmpv, but this build was configured without it");
+    } else {
+      const std::string uri = torrent_service_.stream_uri_for_file(*selected_torrent_file_index_);
+      if (uri.empty()) {
+        TORRVIEW_LOG_ERROR("Torrent stream is not available for selected file");
+      } else {
+        try {
+          player_->load_file(uri);
+          player_controls_visible_ = true;
+          player_controls_last_hover_ = Clock::now();
+        } catch (const std::exception& error) {
+          TORRVIEW_LOG_ERROR("Torrent playback failed: " << error.what());
+        }
+      }
+    }
     update_window_title();
     break;
   case ui::FileBrowserAction::none:
@@ -539,6 +556,11 @@ void Application::handle_player_action(ui::PlayerOverlayAction action) {
     break;
   case ui::PlayerOverlayAction::select_audio_track:
     player_->select_audio_track(player_overlay_.selected_audio_track_index());
+    break;
+  case ui::PlayerOverlayAction::set_cache_size:
+    cache_limit_mib_ = player_overlay_.selected_cache_size_mib();
+    torrent_service_.set_cache_limit_mib(cache_limit_mib_);
+    TORRVIEW_LOG_INFO("Cache limit set to " << cache_limit_mib_ << " MiB");
     break;
   case ui::PlayerOverlayAction::fullscreen:
     toggle_fullscreen();
@@ -593,7 +615,7 @@ void Application::update_player_controls_visibility(Clock::time_point now) {
 void Application::toggle_fullscreen() {
   const bool target = !is_fullscreen();
   if (!SDL_SetWindowFullscreen(window_, target)) {
-    std::cerr << "SDL_SetWindowFullscreen failed: " << SDL_GetError() << '\n';
+    TORRVIEW_LOG_ERROR("SDL_SetWindowFullscreen failed: " << SDL_GetError());
   }
 }
 
@@ -698,23 +720,25 @@ void Application::render_player_screen(float delta_time) {
 
   player_overlay_.begin_frame();
   Clay_BeginLayout();
-  player_overlay_.build(metrics_, player_->snapshot(), is_fullscreen(), player_controls_visible_);
+  player_overlay_.build(metrics_, player_->snapshot(), is_fullscreen(), player_controls_visible_,
+                        cache_limit_mib_);
   Clay_RenderCommandArray commands = Clay_EndLayout(delta_time);
   update_player_controls_visibility(Clock::now());
   clay_renderer_->render(commands);
 }
 
 void Application::log_startup() const {
-  std::cout << "Torrview " << TORRVIEW_VERSION << '\n';
-  std::cout << "Dependencies: SDL3=yes OpenGL=yes Clay=yes"
-            << " libmpv=" << available(has_mpv) << " libtorrent=" << available(has_libtorrent)
-            << " freetype=" << available(has_freetype)
-            << " fontconfig=" << available(has_fontconfig) << " thorvg=" << available(has_thorvg)
-            << '\n';
-  std::cout << "Input shell: drop .torrent files, local video files, or magnet text; press Ctrl+O "
-               "to open a source file, Ctrl+V to paste a magnet link.\n";
-  std::cout << "Playback controls: Space play/pause, Left/Right seek, Up/Down volume, F "
-               "fullscreen.\n";
+  TORRVIEW_LOG_INFO("Torrview " << TORRVIEW_VERSION);
+  TORRVIEW_LOG_INFO("Dependencies: SDL3=yes OpenGL=yes Clay=yes"
+                    << " libmpv=" << available(has_mpv)
+                    << " libtorrent=" << available(has_libtorrent)
+                    << " freetype=" << available(has_freetype)
+                    << " fontconfig=" << available(has_fontconfig)
+                    << " thorvg=" << available(has_thorvg));
+  TORRVIEW_LOG_INFO("Input shell: drop .torrent files, local video files, or magnet text; press "
+                    "Ctrl+O to open a source file, Ctrl+V to paste a magnet link");
+  TORRVIEW_LOG_INFO("Playback controls: Space play/pause, Left/Right seek, Up/Down volume, F "
+                    "fullscreen");
 }
 
 } // namespace torrview

@@ -160,11 +160,24 @@ subdir('src')
 if libtorrent_dep.found()
   memory_disk_io_test = executable(
     'memory_disk_io_test',
-    files('tests/memory_disk_io_test.cpp', 'src/memory_disk_io.cpp'),
+    files('tests/memory_disk_io_test.cpp', 'src/cache_policy.cpp', 'src/memory_disk_io.cpp'),
     dependencies: libtorrent_dep,
     include_directories: [config_inc, include_directories('src')],
   )
   test('memory_disk_io', memory_disk_io_test)
+
+  torrent_stream_probe = executable(
+    'torrent_stream_probe',
+    files(
+      'tests/torrent_stream_probe.cpp',
+      'src/cache_policy.cpp',
+      'src/logger.cpp',
+      'src/memory_disk_io.cpp',
+    ),
+    dependencies: libtorrent_dep,
+    include_directories: [config_inc, include_directories('src')],
+  )
+  test('torrent_stream_probe_skip_without_input', torrent_stream_probe)
 endif
 
 summary({

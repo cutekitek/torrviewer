@@ -80,6 +80,7 @@ private:
   bool dragging_volume_ = false;
   bool player_controls_visible_ = true;
   bool thorvg_initialized_ = false;
+  int cache_limit_mib_ = 512;
   SDL_Window* window_ = nullptr;
   SDL_GLContext context_ = nullptr;
   const char* font_name_ = "TorrviewNotoSans";

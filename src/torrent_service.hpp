@@ -1,5 +1,7 @@
 #pragma once
 
+#include "torrent_stream.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -13,6 +15,17 @@ enum class TorrentLoadState {
   ready,
   error,
   unavailable,
+};
+
+enum class TorrentPieceState {
+  missing,
+  requested,
+  partial,
+  verified,
+  retained,
+  evictable,
+  evicted,
+  failed,
 };
 
 struct TorrentFileInfo {
@@ -39,9 +52,18 @@ struct TorrentSnapshot {
   std::string error;
   std::vector<TorrentFileInfo> files;
   std::vector<TorrentFileInfo> video_files;
+  int active_file_index = -1;
+  int cache_limit_mib = 512;
+  std::int64_t cache_bytes_used = 0;
+  std::int64_t cache_bytes_limit = 512LL * 1024LL * 1024LL;
+  bool buffering = false;
+  bool stalled = false;
+  float buffer_progress = 0.0F;
+  std::string buffer_status;
+  std::vector<TorrentPieceState> piece_states;
 };
 
-class TorrentService final {
+class TorrentService final : public TorrentStreamProvider {
 public:
   TorrentService();
   TorrentService(const TorrentService&) = delete;
@@ -53,7 +75,11 @@ public:
   void load_magnet(const std::string& magnet);
   void process_alerts();
   void reset();
+  void set_cache_limit_mib(int limit_mib);
   const TorrentSnapshot& snapshot() const;
+  std::string stream_uri_for_file(int file_index) const;
+  std::unique_ptr<TorrentStreamReader> open_torrent_stream(const std::string& uri,
+                                                           std::string& error) override;
 
 private:
   class Impl;

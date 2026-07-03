@@ -1,5 +1,6 @@
 #pragma once
 
+#include "torrent_stream.hpp"
 #include "window_state.hpp"
 
 #include <cstddef>
@@ -45,6 +46,7 @@ public:
   ~MpvPlayer();
 
   bool available() const;
+  void set_torrent_stream_provider(TorrentStreamProvider* provider);
   void initialize();
   void load_file(const std::string& path);
   void process_events();
@@ -68,11 +70,14 @@ private:
   void observe_properties();
   void handle_property(const char* name, void* data, int format);
   void update_track_counts(void* node_data);
+  void register_torrent_stream_protocol();
   void command(const char** args);
   void set_status_from_error(const char* action, int code);
 
   mpv_handle* handle_ = nullptr;
   mpv_render_context* render_context_ = nullptr;
+  TorrentStreamProvider* torrent_stream_provider_ = nullptr;
+  bool torrent_stream_protocol_registered_ = false;
   PlaybackSnapshot snapshot_;
 };
 

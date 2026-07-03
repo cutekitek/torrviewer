@@ -1,6 +1,7 @@
 #include "mpv_player.hpp"
 
 #include "config.hpp"
+#include "logger.hpp"
 
 #include <algorithm>
 #include <sstream>
@@ -11,12 +12,89 @@
 #include <SDL3/SDL.h>
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
+#include <mpv/stream_cb.h>
 #endif
 
 namespace torrview {
 namespace {
 
 #if defined(TORRVIEW_HAVE_MPV)
+std::int64_t torrent_stream_read(void* cookie, char* buffer, std::uint64_t bytes) {
+  auto* stream = static_cast<TorrentStreamReader*>(cookie);
+  if (stream == nullptr) {
+    TORRVIEW_LOG_ERROR("mpv torrent stream read failed: null stream cookie");
+    return -1;
+  }
+
+  const std::int64_t result = stream->read(buffer, bytes);
+  if (result <= 0) {
+    TORRVIEW_LOG_DEBUG("mpv torrent stream read returned " << result
+                                                           << " for requested=" << bytes);
+  }
+  return result;
+}
+
+std::int64_t torrent_stream_seek(void* cookie, std::int64_t offset) {
+  auto* stream = static_cast<TorrentStreamReader*>(cookie);
+  if (stream == nullptr) {
+    TORRVIEW_LOG_ERROR("mpv torrent stream seek failed: null stream cookie");
+    return MPV_ERROR_GENERIC;
+  }
+  const std::int64_t result = stream->seek(offset);
+  TORRVIEW_LOG_DEBUG("mpv torrent stream seek offset=" << offset << " result=" << result);
+  return result;
+}
+
+std::int64_t torrent_stream_size(void* cookie) {
+  auto* stream = static_cast<TorrentStreamReader*>(cookie);
+  if (stream == nullptr) {
+    TORRVIEW_LOG_ERROR("mpv torrent stream size failed: null stream cookie");
+    return MPV_ERROR_UNSUPPORTED;
+  }
+  const std::int64_t result = stream->size();
+  TORRVIEW_LOG_DEBUG("mpv torrent stream size result=" << result);
+  return result;
+}
+
+void torrent_stream_cancel(void* cookie) {
+  auto* stream = static_cast<TorrentStreamReader*>(cookie);
+  if (stream != nullptr) {
+    TORRVIEW_LOG_DEBUG("mpv torrent stream cancel");
+    stream->cancel();
+  }
+}
+
+void torrent_stream_close(void* cookie) {
+  TORRVIEW_LOG_DEBUG("mpv torrent stream close");
+  delete static_cast<TorrentStreamReader*>(cookie);
+}
+
+int torrent_stream_open(void* user_data, char* uri, mpv_stream_cb_info* info) {
+  auto* provider = static_cast<TorrentStreamProvider*>(user_data);
+  if (provider == nullptr || uri == nullptr || info == nullptr) {
+    TORRVIEW_LOG_ERROR("mpv torrent stream open failed: invalid callback arguments");
+    return MPV_ERROR_LOADING_FAILED;
+  }
+
+  TORRVIEW_LOG_INFO("mpv torrent stream open uri=" << uri);
+
+  std::string error;
+  std::unique_ptr<TorrentStreamReader> stream = provider->open_torrent_stream(uri, error);
+  if (stream == nullptr) {
+    TORRVIEW_LOG_ERROR("mpv torrent stream open failed: " << error);
+    return MPV_ERROR_LOADING_FAILED;
+  }
+
+  info->cookie = stream.release();
+  info->read_fn = torrent_stream_read;
+  info->seek_fn = torrent_stream_seek;
+  info->size_fn = torrent_stream_size;
+  info->close_fn = torrent_stream_close;
+  info->cancel_fn = torrent_stream_cancel;
+  TORRVIEW_LOG_INFO("mpv torrent stream open ok");
+  return 0;
+}
+
 void* get_mpv_gl_proc_address(void*, const char* name) {
   return reinterpret_cast<void*>(SDL_GL_GetProcAddress(name));
 }
@@ -106,6 +184,11 @@ bool MpvPlayer::available() const {
 #endif
 }
 
+void MpvPlayer::set_torrent_stream_provider(TorrentStreamProvider* provider) {
+  torrent_stream_provider_ = provider;
+  register_torrent_stream_protocol();
+}
+
 void MpvPlayer::initialize() {
 #if defined(TORRVIEW_HAVE_MPV)
   if (handle_ != nullptr) {
@@ -131,6 +214,7 @@ void MpvPlayer::initialize() {
   int flag = 1;
   check_mpv(mpv_set_option(handle_, "pause", MPV_FORMAT_FLAG, &flag), "mpv pause option");
 
+  register_torrent_stream_protocol();
   check_mpv(mpv_initialize(handle_), "mpv_initialize");
   observe_properties();
 
@@ -163,6 +247,10 @@ void MpvPlayer::load_file(const std::string& path) {
     initialize();
   }
 
+  if (path.starts_with("torrview://")) {
+    TORRVIEW_LOG_INFO("mpv loadfile " << path);
+  }
+
   const char* args[] = {"loadfile", path.c_str(), "replace", nullptr};
   command(args);
   snapshot_.loaded = true;
@@ -193,15 +281,30 @@ void MpvPlayer::process_events() {
 
     switch (event->event_id) {
     case MPV_EVENT_FILE_LOADED:
+      if (snapshot_.path.starts_with("torrview://")) {
+        TORRVIEW_LOG_INFO("mpv event file-loaded");
+      }
       snapshot_.loaded = true;
       snapshot_.eof_reached = false;
       snapshot_.status = "Playing";
       break;
-    case MPV_EVENT_END_FILE:
+    case MPV_EVENT_END_FILE: {
+      if (snapshot_.path.starts_with("torrview://")) {
+        auto* end_file = static_cast<mpv_event_end_file*>(event->data);
+        std::ostringstream out;
+        out << "event end-file reason="
+            << (end_file != nullptr ? static_cast<int>(end_file->reason) : -1)
+            << " error=" << (end_file != nullptr ? end_file->error : 0);
+        if (end_file != nullptr && end_file->error < 0) {
+          out << " (" << mpv_error_string(end_file->error) << ')';
+        }
+        TORRVIEW_LOG_WARNING(out.str());
+      }
       snapshot_.eof_reached = true;
       snapshot_.paused = true;
       snapshot_.status = "Ended";
       break;
+    }
     case MPV_EVENT_PROPERTY_CHANGE: {
       auto* property = static_cast<mpv_event_property*>(event->data);
       if (property != nullptr) {
@@ -513,10 +616,34 @@ void MpvPlayer::update_track_counts(void* node_data) {
 #endif
 }
 
+void MpvPlayer::register_torrent_stream_protocol() {
+#if defined(TORRVIEW_HAVE_MPV)
+  if (handle_ == nullptr || torrent_stream_provider_ == nullptr ||
+      torrent_stream_protocol_registered_) {
+    return;
+  }
+
+  check_mpv(mpv_stream_cb_add_ro(handle_, "torrview", torrent_stream_provider_,
+                                 torrent_stream_open),
+            "mpv torrview stream protocol");
+  torrent_stream_protocol_registered_ = true;
+#endif
+}
+
 void MpvPlayer::command(const char** args) {
 #if defined(TORRVIEW_HAVE_MPV)
   const int result = mpv_command(handle_, args);
   if (result < 0) {
+    if (snapshot_.path.starts_with("torrview://") ||
+        (args != nullptr && args[0] != nullptr && std::string_view(args[0]) == "loadfile")) {
+      std::ostringstream out;
+      out << "command failed:";
+      for (const char** arg = args; arg != nullptr && *arg != nullptr; ++arg) {
+        out << ' ' << *arg;
+      }
+      out << " -> " << result << " (" << mpv_error_string(result) << ')';
+      TORRVIEW_LOG_ERROR(out.str());
+    }
     set_status_from_error(args != nullptr && args[0] != nullptr ? args[0] : "mpv command",
                           result);
   }

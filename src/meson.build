@@ -1,7 +1,9 @@
 torrview_sources = files(
   'app.cpp',
+  'cache_policy.cpp',
   'clay.cpp',
   'input_source.cpp',
+  'logger.cpp',
   'main.cpp',
   'memory_disk_io.cpp',
   'mpv_player.cpp',

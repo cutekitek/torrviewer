@@ -1,9 +1,10 @@
 #include "ui/clay_renderer.hpp"
 
+#include "logger.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -97,13 +98,13 @@ Clay_Dimensions measure_text(Clay_StringSlice text, Clay_TextElementConfig* conf
 }
 
 void handle_clay_error(Clay_ErrorData error) {
-  std::cerr << "Clay error: ";
   if (error.errorText.chars != nullptr && error.errorText.length > 0) {
-    std::cerr.write(error.errorText.chars, error.errorText.length);
+    TORRVIEW_LOG_ERROR("Clay error: " << std::string_view(error.errorText.chars,
+                                                          static_cast<std::size_t>(
+                                                              error.errorText.length)));
   } else {
-    std::cerr << "unknown error";
+    TORRVIEW_LOG_ERROR("Clay error: unknown error");
   }
-  std::cerr << '\n';
 }
 
 ClayRenderer::ClayRenderer(SDL_GLContext context, const BasicGlApi& gl_api,

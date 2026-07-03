@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cache_policy.hpp"
 #include "config.hpp"
 
 #include <cstdint>
@@ -14,6 +15,17 @@
 
 namespace torrview {
 
+struct MemoryDiskCacheStatus {
+  std::int64_t bytes_used = 0;
+  CachePolicy policy;
+  bool has_retained_window = false;
+  PieceWindow retained_window;
+  int evicted_pieces = 0;
+  std::vector<int> evicted_piece_indices;
+  std::int64_t evicted_read_misses = 0;
+  std::int64_t missing_read_misses = 0;
+};
+
 class MemoryDiskIO final : public libtorrent::disk_interface,
                            public libtorrent::buffer_allocator_interface {
 public:
@@ -23,6 +35,13 @@ public:
   ~MemoryDiskIO() override;
 
   std::int64_t bytes_used() const;
+  CachePolicy cache_policy() const;
+  void set_cache_policy(CachePolicy policy);
+  PieceWindow update_retained_window(libtorrent::storage_index_t storage,
+                                     std::int64_t torrent_byte_offset);
+  void set_retained_window(libtorrent::storage_index_t storage, PieceWindow window);
+  void clear_retained_window(libtorrent::storage_index_t storage);
+  MemoryDiskCacheStatus cache_status(libtorrent::storage_index_t storage) const;
 
   libtorrent::storage_holder new_torrent(libtorrent::storage_params const& params,
                                          std::shared_ptr<void> const& torrent) override;
@@ -92,6 +111,10 @@ std::unique_ptr<libtorrent::disk_interface>
 create_memory_disk_io(libtorrent::io_context& io_context,
                       libtorrent::settings_interface const& settings,
                       libtorrent::counters& counters);
+
+void set_memory_disk_cache_policy(CachePolicy policy);
+PieceWindow update_memory_disk_retained_window(std::int64_t torrent_byte_offset);
+MemoryDiskCacheStatus memory_disk_cache_status();
 
 } // namespace torrview
 #endif

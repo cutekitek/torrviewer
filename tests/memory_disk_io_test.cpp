@@ -33,14 +33,50 @@ lt::file_storage make_files() {
   lt::file_storage files;
   files.set_name("memory-test");
   files.set_piece_length(lt::default_block_size);
-  files.add_file("payload.bin", lt::default_block_size * 2);
-  files.set_num_pieces(2);
+  files.add_file("payload.bin", lt::default_block_size * 6);
+  files.set_num_pieces(6);
   return files;
+}
+
+void write_piece(torrview::MemoryDiskIO& disk, lt::io_context& io_context,
+                 lt::storage_index_t storage, lt::piece_index_t piece,
+                 const std::array<char, lt::default_block_size>& block) {
+  bool write_done = false;
+  disk.async_write(storage, {piece, 0, static_cast<int>(block.size())}, block.data(), {},
+                   [&](lt::storage_error const& error) {
+                     require(!error, "write returned an error");
+                     write_done = true;
+                   });
+  run_io(io_context);
+  require(write_done, "write callback was not called");
+}
+
+bool read_piece_start(torrview::MemoryDiskIO& disk, lt::io_context& io_context,
+                      lt::storage_index_t storage, lt::piece_index_t piece) {
+  bool read_done = false;
+  bool read_ok = false;
+  disk.async_read(storage, {piece, 0, 16},
+                  [&](lt::disk_buffer_holder buffer, lt::storage_error const& error) {
+                    read_ok = !error && buffer && buffer.size() == 16;
+                    read_done = true;
+                  });
+  run_io(io_context);
+  require(read_done, "read callback was not called");
+  return read_ok;
 }
 
 } // namespace
 
 int main() {
+  const torrview::CachePolicy default_policy;
+  require(default_policy.max_bytes == 128LL * torrview::CachePolicy::mib,
+          "default cache limit should be 128 MiB");
+  const torrview::PieceWindow default_window = torrview::compute_retained_piece_window(
+      40LL * torrview::CachePolicy::mib, 256, static_cast<int>(torrview::CachePolicy::mib),
+      default_policy);
+  require(default_window.first_piece == 8 && default_window.end_piece == 136,
+          "default retained window should keep 32 MiB behind and 96 MiB ahead");
+
   lt::io_context io_context;
   torrview::MemoryDiskIO disk(io_context);
 
@@ -57,14 +93,7 @@ int main() {
     block[index] = static_cast<char>(index % 251U);
   }
 
-  bool write_done = false;
-  disk.async_write(storage, {lt::piece_index_t{0}, 0, static_cast<int>(block.size())},
-                   block.data(), {}, [&](lt::storage_error const& error) {
-                     require(!error, "write returned an error");
-                     write_done = true;
-                   });
-  run_io(io_context);
-  require(write_done, "write callback was not called");
+  write_piece(disk, io_context, storage, lt::piece_index_t{0}, block);
   require(disk.bytes_used() == static_cast<std::int64_t>(block.size()),
           "memory usage did not track the allocated piece");
 
@@ -124,6 +153,31 @@ int main() {
                    });
   run_io(io_context);
   require(hash2_done, "hash2 callback was not called");
+
+  disk.set_cache_policy({static_cast<std::int64_t>(block.size() * 2),
+                         static_cast<std::int64_t>(block.size()),
+                         static_cast<std::int64_t>(block.size())});
+  const torrview::PieceWindow retained =
+      disk.update_retained_window(storage, static_cast<std::int64_t>(block.size() * 3));
+  require(retained.first_piece == 2 && retained.end_piece == 4,
+          "retained window should be computed from playback byte offset");
+
+  write_piece(disk, io_context, storage, lt::piece_index_t{1}, block);
+  write_piece(disk, io_context, storage, lt::piece_index_t{2}, block);
+  write_piece(disk, io_context, storage, lt::piece_index_t{3}, block);
+  require(disk.bytes_used() == static_cast<std::int64_t>(block.size() * 2),
+          "cache eviction should hold memory near the configured limit");
+  require(!read_piece_start(disk, io_context, storage, lt::piece_index_t{0}),
+          "evicted piece should read as a storage miss");
+  require(read_piece_start(disk, io_context, storage, lt::piece_index_t{2}),
+          "retained piece should remain readable");
+  torrview::MemoryDiskCacheStatus status = disk.cache_status(storage);
+  require(status.evicted_read_misses > 0, "evicted read miss was not tracked");
+
+  disk.update_retained_window(storage, 0);
+  write_piece(disk, io_context, storage, lt::piece_index_t{0}, block);
+  require(read_piece_start(disk, io_context, storage, lt::piece_index_t{0}),
+          "rewritten evicted piece should satisfy the backward seek rebuffer path");
 
   bool delete_done = false;
   disk.async_delete_files(storage, {}, [&](lt::storage_error const& error) {

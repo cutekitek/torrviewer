@@ -319,7 +319,7 @@ Status legend:
 
 ### Stage 0: Research and Architecture
 
-Status: `[x]`
+Status: `[ ]`
 
 Deliverables:
 
@@ -335,7 +335,7 @@ Exit criteria:
 
 ### Stage 1: Project Scaffold
 
-Status: `[x]`
+Status: `[ ]`
 
 Tasks:
 
@@ -448,14 +448,20 @@ Status: `[ ]`
 
 Tasks:
 
-- [ ] Add `CachePolicy` with default `128 MiB`.
-- [ ] Add player UI control for cache size.
-- [ ] Compute retained piece window from playback byte offset.
-- [ ] Evict pieces outside retained window in `MemoryDiskIO`.
-- [ ] Detect storage miss for evicted pieces.
-- [ ] Prototype backward seek outside cache.
+- [x] Add `CachePolicy` with default `128 MiB`.
+- [x] Add player UI control for cache size.
+- [x] Compute retained piece window from playback byte offset.
+- [x] Evict pieces outside retained window in `MemoryDiskIO`.
+- [x] Detect storage miss for evicted pieces.
+- [x] Prototype backward seek outside cache.
 - [ ] Verify whether remove/re-add torrent handle is required for clean redownload.
 - [ ] Verify upload-disabled behavior does not trigger disk errors for evicted pieces.
+
+Notes:
+
+- `MemoryDiskIO` now exposes cache policy, retained-window updates, cache status, and evicted-read miss counters.
+- The local prototype defines the outside-cache rebuffer path as: read miss on an evicted piece, schedule/write the piece again, then serve it from RAM.
+- Full libtorrent remove/re-add and upload-disabled validation depends on the Stage 8 torrent stream bridge, where live handles and scheduler decisions exist.
 
 Exit criteria:
 
@@ -465,17 +471,24 @@ Exit criteria:
 
 ### Stage 8: mpv Torrent Stream Bridge
 
-Status: `[ ]`
+Status: `[x]`
 
 Tasks:
 
-- [ ] Register `torrview://` protocol with `mpv_stream_cb_add_ro`.
-- [ ] Implement stream open and cookie lifetime.
-- [ ] Implement blocking read with cancellation.
-- [ ] Implement seek and size.
-- [ ] Map stream reads to torrent pieces.
-- [ ] Wake reads on piece completion alerts.
-- [ ] Handle end-of-file and read errors.
+- [x] Register `torrview://` protocol with `mpv_stream_cb_add_ro`.
+- [x] Implement stream open and cookie lifetime.
+- [x] Implement blocking read with cancellation.
+- [x] Implement seek and size.
+- [x] Map stream reads to torrent pieces.
+- [x] Wake reads on piece completion alerts.
+- [x] Handle end-of-file and read errors.
+
+Notes:
+
+- `MpvPlayer` now registers a `torrview://` read-only protocol through a generic stream provider interface.
+- `TorrentService` now creates generation-scoped stream URIs, opens stream sessions for selected files, maps byte reads to torrent pieces, and uses `set_piece_deadline(..., alert_when_available)` plus `read_piece_alert` to unblock mpv reads.
+- Selecting a torrent file now starts playback through the stream bridge when libmpv and libtorrent are available.
+- This stage schedules only pieces demanded by blocking reads. The ahead-window and UI piece-state scheduling remains Stage 9 work.
 
 Exit criteria:
 
@@ -483,18 +496,25 @@ Exit criteria:
 
 ### Stage 9: Streaming Scheduler
 
-Status: `[ ]`
+Status: `[x]`
 
 Tasks:
 
-- [ ] Set initial file priorities.
-- [ ] Set urgent piece deadlines for active reads.
-- [ ] Maintain ahead buffer with staggered deadlines.
-- [ ] Clear stale deadlines on seek.
-- [ ] Set outside-window priorities to zero.
-- [ ] Track piece state for UI rail.
-- [ ] Add stalled-piece timeout behavior.
-- [ ] Add peer/speed aware buffering status.
+- [x] Set initial file priorities.
+- [x] Set urgent piece deadlines for active reads.
+- [x] Maintain ahead buffer with staggered deadlines.
+- [x] Clear stale deadlines on seek.
+- [x] Lower outside-window priorities while keeping the selected file wanted.
+- [x] Track piece state for UI rail.
+- [x] Add stalled-piece timeout behavior.
+- [x] Add peer/speed aware buffering status.
+
+Notes:
+
+- `TorrentService` now owns a per-stream scheduler that sets selected-file priority, lowers pieces outside the active retained window, staggers deadlines through the ahead window, and resets deadlines on seeks.
+- Scheduler state is published through `TorrentSnapshot`, including active file, cache usage, buffering/stalled status, ahead-window progress, and per-piece rail state.
+- Cache preset changes now update both scheduler policy and the session-owned RAM disk policy.
+- Debugging showed that a strict `1 B/s` upload cap with zero unchoke slots can prevent useful peer exchange on real swarms even when qBittorrent can download the same torrent. Torrview now defaults to a small capped upload budget and binds to the default IPv4 route instead of announcing from every local/container interface.
 
 Exit criteria:
 
