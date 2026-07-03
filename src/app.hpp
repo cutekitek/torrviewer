@@ -4,7 +4,9 @@
 #include "input_source.hpp"
 #include "mpv_player.hpp"
 #include "sdl_event_manager.hpp"
+#include "torrent_service.hpp"
 #include "ui/clay_renderer.hpp"
+#include "ui/file_browser_page.hpp"
 #include "ui/player_overlay.hpp"
 #include "ui/title_page.hpp"
 #include "window_state.hpp"
@@ -57,6 +59,7 @@ private:
   void paste_clipboard();
   void consume_dialog_results();
   void accept_input(ParsedInput input);
+  void handle_file_browser_click();
   void handle_player_click();
   void handle_player_action(ui::PlayerOverlayAction action);
   void update_volume_from_pointer();
@@ -66,6 +69,7 @@ private:
   void update_window_metrics();
   void update_window_title();
   void render();
+  void render_file_browser_screen(float delta_time);
   void render_title_screen(float delta_time);
   void render_player_screen(float delta_time);
   void log_startup() const;
@@ -89,12 +93,15 @@ private:
   Clock::time_point player_controls_last_hover_;
   std::unique_ptr<ui::ClayRenderer> clay_renderer_;
   std::unique_ptr<MpvPlayer> player_;
+  TorrentService torrent_service_;
   ui::TitlePage title_page_;
+  ui::FileBrowserPage file_browser_page_;
   ui::PlayerOverlay player_overlay_;
   SdlEventManager event_manager_;
   std::vector<char> font_data_;
   std::vector<char> clay_memory_;
   std::optional<ParsedInput> last_input_;
+  std::optional<int> selected_torrent_file_index_;
 };
 
 } // namespace torrview

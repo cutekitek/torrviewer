@@ -311,6 +311,11 @@ void Application::mouse_button(const SDL_MouseButtonEvent& button) {
     return;
   }
 
+  if (torrent_service_.snapshot().state != TorrentLoadState::idle) {
+    handle_file_browser_click();
+    return;
+  }
+
   if (Clay_PointerOver(title_page_.source_panel_id())) {
     show_open_source_dialog();
   }
@@ -398,6 +403,7 @@ void Application::initialize_clay() {
   text_measure_state_.font_name = font_name_;
   Clay_SetMeasureTextFunction(ui::measure_text, &text_measure_state_);
   title_page_.initialize_ids();
+  file_browser_page_.initialize_ids();
   player_overlay_.initialize_ids();
   last_frame_time_ = Clock::now();
   player_controls_last_hover_ = last_frame_time_;
@@ -449,6 +455,8 @@ void Application::accept_input(ParsedInput input) {
 
   last_input_ = std::move(input);
   if (last_input_->kind == InputKind::local_media_file) {
+    torrent_service_.reset();
+    selected_torrent_file_index_.reset();
     if (player_ == nullptr || !player_->available()) {
       std::cerr << "Local playback requires libmpv, but this build was configured without it.\n";
     } else {
@@ -460,11 +468,45 @@ void Application::accept_input(ParsedInput input) {
         std::cerr << "Local playback failed: " << error.what() << '\n';
       }
     }
+  } else if (last_input_->kind == InputKind::torrent_file ||
+             last_input_->kind == InputKind::magnet_link) {
+    if (player_ != nullptr && player_->has_file()) {
+      player_->stop();
+    }
+    selected_torrent_file_index_.reset();
+    try {
+      if (last_input_->kind == InputKind::torrent_file) {
+        torrent_service_.load_torrent_file(last_input_->value);
+      } else {
+        torrent_service_.load_magnet(last_input_->value);
+      }
+    } catch (const std::exception& error) {
+      std::cerr << "Torrent metadata load failed: " << error.what() << '\n';
+    }
+  } else {
+    torrent_service_.reset();
+    selected_torrent_file_index_.reset();
   }
 
   std::cout << "Input: " << input_kind_label(last_input_->kind) << " - "
             << compact_value(last_input_->value) << '\n';
   update_window_title();
+}
+
+void Application::handle_file_browser_click() {
+  switch (file_browser_page_.hit_test_click()) {
+  case ui::FileBrowserAction::open_source:
+    show_open_source_dialog();
+    break;
+  case ui::FileBrowserAction::select_file:
+    selected_torrent_file_index_ = file_browser_page_.selected_file_index();
+    std::cout << "Selected torrent file index " << *selected_torrent_file_index_
+              << " for a future torrent stream.\n";
+    update_window_title();
+    break;
+  case ui::FileBrowserAction::none:
+    break;
+  }
 }
 
 void Application::handle_player_click() {
@@ -581,6 +623,9 @@ void Application::update_window_title() {
   if (last_input_.has_value()) {
     title << " - " << input_kind_label(last_input_->kind) << ": "
           << compact_value(last_input_->value, 72);
+    if (selected_torrent_file_index_.has_value()) {
+      title << " - file " << *selected_torrent_file_index_;
+    }
   } else {
     title << " - Drop .torrent, paste magnet, or press Ctrl+O";
   }
@@ -602,6 +647,7 @@ void Application::render() {
   if (player_ != nullptr) {
     player_->process_events();
   }
+  torrent_service_.process_alerts();
 
   Clay_SetCurrentContext(clay_context_);
   Clay_SetLayoutDimensions({.width = static_cast<float>(metrics_.logical_width),
@@ -615,6 +661,8 @@ void Application::render() {
 
   if (player_ != nullptr && player_->has_file()) {
     render_player_screen(delta_time);
+  } else if (torrent_service_.snapshot().state != TorrentLoadState::idle) {
+    render_file_browser_screen(delta_time);
   } else {
     render_title_screen(delta_time);
   }
@@ -629,6 +677,14 @@ void Application::render_title_screen(float delta_time) {
   title_page_.begin_frame();
   Clay_BeginLayout();
   title_page_.build(metrics_, drag_active_, last_input_);
+  Clay_RenderCommandArray commands = Clay_EndLayout(delta_time);
+  clay_renderer_->render(commands);
+}
+
+void Application::render_file_browser_screen(float delta_time) {
+  file_browser_page_.begin_frame();
+  Clay_BeginLayout();
+  file_browser_page_.build(metrics_, torrent_service_.snapshot(), selected_torrent_file_index_);
   Clay_RenderCommandArray commands = Clay_EndLayout(delta_time);
   clay_renderer_->render(commands);
 }

@@ -63,7 +63,36 @@ if get_option('mpv').allowed()
     mpv_dep = mpv_proj.get_variable('libmpv_dep')
   endif
 endif
-libtorrent_dep = dependency('libtorrent-rasterbar', required: get_option('libtorrent'))
+
+libtorrent_dep = dependency('', required: false)
+if get_option('libtorrent').allowed()
+  libtorrent_dep = dependency('libtorrent-rasterbar', required: false)
+  if not libtorrent_dep.found()
+    cmake = import('cmake')
+    libtorrent_options = cmake.subproject_options()
+    libtorrent_options.add_cmake_defines({
+      'BUILD_SHARED_LIBS': false,
+      'build_tests': false,
+      'build_examples': false,
+      'build_tools': false,
+      'python-bindings': false,
+      'python-egg-info': false,
+      'developer-options': false,
+      'dht': true,
+      'extensions': true,
+      'streaming': true,
+    })
+    libtorrent_proj = cmake.subproject(
+      'libtorrent-rasterbar',
+      options: libtorrent_options,
+      required: get_option('libtorrent'),
+    )
+    if libtorrent_proj.found()
+      libtorrent_dep = libtorrent_proj.dependency('torrent-rasterbar')
+    endif
+  endif
+endif
+
 freetype_dep = dependency('freetype2', required: get_option('freetype'))
 fontconfig_dep = dependency('fontconfig', required: get_option('fontconfig'))
 

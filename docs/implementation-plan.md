@@ -402,22 +402,27 @@ Exit criteria:
 
 ### Stage 5: Torrent Metadata and File Browser
 
-Status: `[ ]`
+Status: `[x]`
 
 Tasks:
 
-- [ ] Create `TorrentService`.
-- [ ] Configure libtorrent session settings.
-- [ ] Load `.torrent` files.
-- [ ] Parse magnet links and wait for metadata.
-- [ ] Process alerts on a bridge loop.
-- [ ] Extract file list from `torrent_info`.
-- [ ] Detect likely video files.
-- [ ] Build file selection screen.
+- [x] Create `TorrentService`.
+- [x] Configure libtorrent session settings.
+- [x] Load `.torrent` files.
+- [x] Parse magnet links and wait for metadata.
+- [x] Process alerts on a bridge loop.
+- [x] Extract file list from `torrent_info`.
+- [x] Detect likely video files.
+- [x] Build file selection screen.
 
 Exit criteria:
 
 - User can open `.torrent` or magnet and see selectable video files.
+
+Implementation note:
+
+- Code is guarded for builds without libtorrent and was compile-verified in that configuration.
+  Runtime metadata loading requires a build where `libtorrent-rasterbar` is found.
 
 ### Stage 6: RAM Disk Interface Prototype
 

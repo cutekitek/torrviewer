@@ -1,0 +1,5 @@
+[wrap-git]
+url = https://github.com/arvidn/libtorrent.git
+revision = v2.0.13
+depth = 1
+clone-recursive = true
