@@ -12,6 +12,8 @@ project(
 
 fs = import('fs')
 cpp = meson.get_compiler('cpp')
+windows_static = get_option('windows_static')
+static_linkage = windows_static
 
 add_project_arguments(
   cpp.get_supported_arguments([
@@ -23,13 +25,29 @@ add_project_arguments(
   language: 'cpp',
 )
 
+if windows_static and host_machine.system() != 'windows'
+  error('windows_static=true is only supported for Windows targets')
+endif
+
+if windows_static
+  add_project_link_arguments(
+    cpp.get_supported_link_arguments([
+      '-static',
+      '-static-libgcc',
+      '-static-libstdc++',
+    ]),
+    language: 'cpp',
+  )
+endif
+
 if not fs.exists(meson.project_source_root() / 'third_party' / 'clay' / 'clay.h')
   error('Clay submodule is missing. Run: git submodule update --init --recursive')
 endif
 
-sdl3_dep = dependency('sdl3', required: true)
+sdl3_dep = dependency('sdl3', static: static_linkage, required: true)
 
 if host_machine.system() == 'windows'
+  add_project_arguments('-DNOMINMAX', language: 'cpp')
   opengl_dep = cpp.find_library('opengl32', required: true)
 else
   opengl_dep = dependency('opengl', required: false)
@@ -43,30 +61,101 @@ endif
 
 mpv_dep = dependency('', required: false)
 if get_option('mpv').allowed()
-  mpv_proj = subproject(
-    'mpv',
-    default_options: [
-      'default_library=static',
-      'libmpv=true',
-      'cplayer=false',
-      'tests=false',
-      'build-date=false',
-      'lua=disabled',
-      'javascript=disabled',
-      'libavdevice=disabled',
-      'vapoursynth=disabled',
-      'plain-gl=enabled',
-    ],
-    required: get_option('mpv'),
-  )
-  if mpv_proj.found()
-    mpv_dep = mpv_proj.get_variable('libmpv_dep')
+  if get_option('system_mpv') and not windows_static
+    mpv_dep = dependency('mpv', static: static_linkage, required: false)
+  endif
+  if not mpv_dep.found()
+    mpv_proj = subproject(
+      'mpv',
+      default_options: [
+        'default_library=static',
+        'libmpv=true',
+        'cplayer=false',
+        'tests=false',
+        'fuzzers=false',
+        'build-date=false',
+        'html-build=disabled',
+        'manpage-build=disabled',
+        'pdf-build=disabled',
+        'caca=disabled',
+        'cdda=disabled',
+        'cplugins=disabled',
+        'dvbin=disabled',
+        'dvdnav=disabled',
+        'jpeg=disabled',
+        'lcms2=disabled',
+        'libarchive=disabled',
+        'lua=disabled',
+        'javascript=disabled',
+        'libbluray=disabled',
+        'libavdevice=disabled',
+        'rubberband=disabled',
+        'shaderc=disabled',
+        'spirv-cross=disabled',
+        'uchardet=disabled',
+        'vapoursynth=disabled',
+        'zimg=disabled',
+        'alsa=disabled',
+        'audiounit=disabled',
+        'avfoundation=disabled',
+        'coreaudio=disabled',
+        'jack=disabled',
+        'openal=disabled',
+        'audiotrack=disabled',
+        'aaudio=disabled',
+        'opensles=disabled',
+        'oss-audio=disabled',
+        'pipewire=disabled',
+        'pulse=disabled',
+        'sdl2-audio=disabled',
+        'sndio=disabled',
+        'wasapi=enabled',
+        'cocoa=disabled',
+        'd3d11=disabled',
+        'direct3d=disabled',
+        'dmabuf-wayland=disabled',
+        'drm=disabled',
+        'egl=disabled',
+        'egl-angle=disabled',
+        'egl-angle-lib=disabled',
+        'egl-angle-win32=disabled',
+        'gbm=disabled',
+        'gl=enabled',
+        'gl-cocoa=disabled',
+        'gl-dxinterop=disabled',
+        'gl-win32=disabled',
+        'gl-x11=disabled',
+        'plain-gl=enabled',
+        'sdl2-video=disabled',
+        'sixel=disabled',
+        'vaapi=disabled',
+        'vulkan=disabled',
+        'wayland=disabled',
+        'x11=disabled',
+        'xv=disabled',
+        'android-media-ndk=disabled',
+        'cuda-hwaccel=disabled',
+        'cuda-interop=disabled',
+        'd3d-hwaccel=disabled',
+        'd3d9-hwaccel=disabled',
+        'gl-dxinterop-d3d9=disabled',
+        'videotoolbox-gl=disabled',
+        'videotoolbox-pl=disabled',
+        'win32-smtc=disabled',
+      ],
+      required: get_option('mpv'),
+    )
+    if mpv_proj.found()
+      mpv_dep = mpv_proj.get_variable('libmpv_dep')
+    endif
   endif
 endif
 
 libtorrent_dep = dependency('', required: false)
 if get_option('libtorrent').allowed()
-  libtorrent_dep = dependency('libtorrent-rasterbar', required: false)
+  if get_option('system_libtorrent') and not windows_static
+    libtorrent_dep = dependency('libtorrent-rasterbar', static: static_linkage, required: false)
+  endif
   if not libtorrent_dep.found()
     cmake = import('cmake')
     libtorrent_options = cmake.subproject_options()
@@ -82,6 +171,12 @@ if get_option('libtorrent').allowed()
       'extensions': true,
       'streaming': true,
     })
+    if windows_static
+      libtorrent_options.add_cmake_defines({
+        'Boost_USE_STATIC_LIBS': true,
+        'OPENSSL_USE_STATIC_LIBS': true,
+      })
+    endif
     libtorrent_proj = cmake.subproject(
       'libtorrent-rasterbar',
       options: libtorrent_options,
@@ -93,10 +188,13 @@ if get_option('libtorrent').allowed()
   endif
 endif
 
-freetype_dep = dependency('freetype2', required: get_option('freetype'))
-fontconfig_dep = dependency('fontconfig', required: get_option('fontconfig'))
+freetype_dep = dependency('freetype2', static: static_linkage, required: get_option('freetype'))
+fontconfig_dep = dependency('fontconfig', static: static_linkage, required: get_option('fontconfig'))
 
-thorvg_dep = dependency('thorvg-1', required: false)
+thorvg_dep = dependency('', required: false)
+if not windows_static
+  thorvg_dep = dependency('thorvg-1', static: static_linkage, required: false)
+endif
 if not thorvg_dep.found() and get_option('thorvg').allowed()
   thorvg_proj = subproject(
     'thorvg',
