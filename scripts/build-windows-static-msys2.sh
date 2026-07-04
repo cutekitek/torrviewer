@@ -3,20 +3,34 @@ set -euo pipefail
 
 builddir="${1:-build-windows-static}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-deps_root="${repo_root}/build/_windows-static-deps"
+deps_root="${DEPS_ROOT:-${repo_root}/build/_windows-static-deps}"
 prefix="${deps_root}/prefix"
 ffmpeg_src="${deps_root}/ffmpeg"
 libplacebo_src="${deps_root}/libplacebo"
 libplacebo_build="${deps_root}/libplacebo-build"
 ffmpeg_ref="${FFMPEG_REF:-n7.1.1}"
 libplacebo_ref="${LIBPLACEBO_REF:-v7.360.1}"
+ffmpeg_enable_small="${FFMPEG_ENABLE_SMALL:-1}"
+enable_upx="${ENABLE_UPX:-1}"
+enable_lto="${ENABLE_LTO:-0}"
 log_dir="${repo_root}/build/logs"
 log_file="${log_dir}/windows-static-$(date +%Y%m%d-%H%M%S).log"
+
+is_enabled() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON|enabled|ENABLED) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 mkdir -p "${log_dir}"
 exec > >(tee -a "${log_file}") 2>&1
 
 echo "Logging to ${log_file}"
+echo "Dependency root: ${deps_root}"
+echo "FFmpeg --enable-small: ${ffmpeg_enable_small}"
+echo "UPX compression: ${enable_upx}"
+echo "LTO: ${enable_lto}"
 
 case "${MSYSTEM:-}" in
   UCRT64) package_prefix="mingw-w64-ucrt-x86_64" ;;
@@ -31,7 +45,7 @@ esac
 
 install_packages() {
   if command -v pacman >/dev/null 2>&1; then
-    pacman -S --needed --noconfirm \
+    local packages=(
       git make perl nasm yasm diffutils pkgconf \
       "${package_prefix}-binutils" \
       "${package_prefix}-gcc" \
@@ -51,15 +65,28 @@ install_packages() {
       "${package_prefix}-bzip2" \
       "${package_prefix}-openssl" \
       "${package_prefix}-boost"
+    )
+
+    if is_enabled "${enable_upx}"; then
+      packages+=("${package_prefix}-upx")
+    fi
+
+    pacman -S --needed --noconfirm "${packages[@]}"
   fi
 }
 
 build_ffmpeg() {
   mkdir -p "${deps_root}" "${prefix}"
-  local stamp="${prefix}/.ffmpeg-${ffmpeg_ref}.stamp"
+  local ffmpeg_profile="default"
+  local small_flags=()
+  if is_enabled "${ffmpeg_enable_small}"; then
+    ffmpeg_profile="small"
+    small_flags+=(--enable-small)
+  fi
+  local stamp="${prefix}/.ffmpeg-${ffmpeg_ref}-${ffmpeg_profile}.stamp"
 
   if [[ -f "${stamp}" && -f "${prefix}/lib/pkgconfig/libavcodec.pc" ]]; then
-    echo "Using existing FFmpeg build for ${ffmpeg_ref}"
+    echo "Using existing FFmpeg build for ${ffmpeg_ref} (${ffmpeg_profile})"
     return
   fi
 
@@ -89,6 +116,7 @@ build_ffmpeg() {
     --disable-network \
     --disable-autodetect \
     --disable-everything \
+    "${small_flags[@]}" \
     --enable-avcodec \
     --enable-avformat \
     --enable-avfilter \
@@ -181,7 +209,8 @@ configure_and_build_app() {
   export LDFLAGS="${LDFLAGS:-} -static -static-libgcc -static-libstdc++"
 
   local build_path="${repo_root}/${builddir}"
-  meson setup "${build_path}" "${repo_root}" \
+  local meson_args=(
+    setup "${build_path}" "${repo_root}" \
     --wipe \
     --buildtype=release \
     --strip \
@@ -195,12 +224,22 @@ configure_and_build_app() {
     -Dthorvg=enabled \
     -Dfreetype=enabled \
     -Dfontconfig=enabled
+  )
+
+  if is_enabled "${enable_lto}"; then
+    meson_args+=(-Db_lto=true)
+  fi
+
+  meson "${meson_args[@]}"
 
   meson compile -C "${build_path}"
 
   local exe="${build_path}/src/torrview.exe"
   if [[ -f "${exe}" ]]; then
     strip --strip-all "${exe}"
+    if is_enabled "${enable_upx}"; then
+      upx --best --lzma "${exe}"
+    fi
     echo
     echo "Built ${exe}"
     ls -lh "${exe}"
