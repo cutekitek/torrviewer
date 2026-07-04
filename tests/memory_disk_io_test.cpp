@@ -69,13 +69,13 @@ bool read_piece_start(torrview::MemoryDiskIO& disk, lt::io_context& io_context,
 
 int main() {
   const torrview::CachePolicy default_policy;
-  require(default_policy.max_bytes == 128LL * torrview::CachePolicy::mib,
-          "default cache limit should be 128 MiB");
+  require(default_policy.max_bytes == 256LL * torrview::CachePolicy::mib,
+          "default cache limit should be 256 MiB");
   const torrview::PieceWindow default_window = torrview::compute_retained_piece_window(
       40LL * torrview::CachePolicy::mib, 256, static_cast<int>(torrview::CachePolicy::mib),
       default_policy);
-  require(default_window.first_piece == 8 && default_window.end_piece == 136,
-          "default retained window should keep 32 MiB behind and 96 MiB ahead");
+  require(default_window.first_piece == 0 && default_window.end_piece == 232,
+          "default retained window should keep 64 MiB behind and 192 MiB ahead");
 
   lt::io_context io_context;
   torrview::MemoryDiskIO disk(io_context);

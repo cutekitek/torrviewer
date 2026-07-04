@@ -178,12 +178,12 @@ lt::settings_pack make_session_settings() {
   settings.set_str(lt::settings_pack::user_agent, "Torrview/" TORRVIEW_VERSION);
   settings.set_str(lt::settings_pack::listen_interfaces, listen_interfaces);
   settings.set_bool(lt::settings_pack::enable_dht, true);
-  settings.set_bool(lt::settings_pack::enable_lsd, false);
-  settings.set_bool(lt::settings_pack::enable_upnp, false);
-  settings.set_bool(lt::settings_pack::enable_natpmp, false);
-  settings.set_int(lt::settings_pack::connections_limit, 80);
+  settings.set_bool(lt::settings_pack::enable_lsd, true);
+  settings.set_bool(lt::settings_pack::enable_upnp, true);
+  settings.set_bool(lt::settings_pack::enable_natpmp, true);
+  settings.set_int(lt::settings_pack::connections_limit, 200);
   settings.set_int(lt::settings_pack::upload_rate_limit,
-                   env_int_or_default("TORRVIEW_UPLOAD_RATE_LIMIT", 16 * 1024));
+                   env_int_or_default("TORRVIEW_UPLOAD_RATE_LIMIT", 128 * 1024));
   settings.set_int(lt::settings_pack::unchoke_slots_limit,
                    env_int_or_default("TORRVIEW_UNCHOKE_SLOTS", 4));
   settings.set_int(lt::settings_pack::num_optimistic_unchoke_slots,
@@ -346,9 +346,9 @@ bool is_operation_canceled(const lt::error_code& error) {
 #if defined(TORRVIEW_HAVE_LIBTORRENT)
 struct SchedulerSnapshot {
   int active_file_index = -1;
-  int cache_limit_mib = 512;
+  int cache_limit_mib = 256;
   std::int64_t cache_bytes_used = 0;
-  std::int64_t cache_bytes_limit = 128LL * 1024LL * 1024LL;
+  std::int64_t cache_bytes_limit = 256LL * 1024LL * 1024LL;
   bool buffering = false;
   bool stalled = false;
   float buffer_progress = 0.0F;
@@ -777,7 +777,7 @@ private:
       }
 
       for (int piece : work.background_priority) {
-        handle_.piece_priority(lt::piece_index_t(piece), lt::low_priority);
+        handle_.piece_priority(lt::piece_index_t(piece), lt::dont_download);
       }
 
       for (const auto& [piece, deadline] : work.deadlines) {
@@ -1718,8 +1718,8 @@ public:
     snapshot_.available = false;
     snapshot_.state = TorrentLoadState::idle;
     snapshot_.status = "This build was configured without libtorrent";
-    snapshot_.cache_limit_mib = 512;
-    snapshot_.cache_bytes_limit = 512LL * 1024LL * 1024LL;
+    snapshot_.cache_limit_mib = 256;
+    snapshot_.cache_bytes_limit = 256LL * 1024LL * 1024LL;
   }
 
   const TorrentSnapshot& snapshot() const { return snapshot_; }

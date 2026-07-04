@@ -22,7 +22,7 @@ Core technologies requested:
 - `libtorrent` for torrent networking.
 - Strict no-persistent-download behavior.
 - Rolling video buffer around current playback position.
-- Default buffer: `128 MiB`, configurable in player.
+- Default buffer: `256 MiB`, configurable in player.
 
 ## Key Product Decisions
 
@@ -77,15 +77,15 @@ The player must buffer only a bounded amount around current playback progress.
 
 Default:
 
-- Total cache limit: `128 MiB`.
-- Suggested split: `32 MiB` behind playback position and `96 MiB` ahead.
+- Total cache limit: `256 MiB`.
+- Suggested split: `64 MiB` behind playback position and `192 MiB` ahead.
 - Actual memory may be `limit + piece_size + in-flight blocks`, because torrent data is piece/block based.
 
 Configurable in player:
 
 - Presets: `64 MiB`, `128 MiB`, `256 MiB`, `512 MiB`.
 - Optional custom value.
-- UI displays current cache usage, for example `84 MiB / 128 MiB`.
+- UI displays current cache usage, for example `168 MiB / 256 MiB`.
 
 ## Major Technical Constraint: Libtorrent Piece Eviction
 
@@ -239,8 +239,8 @@ On playback progress update or stream read:
 
 1. Determine current byte offset.
 2. Compute target retained range:
-   - Behind range: default `32 MiB`.
-   - Ahead range: default `96 MiB`.
+   - Behind range: default `64 MiB`.
+   - Ahead range: default `192 MiB`.
 3. Mark pieces inside range as retained.
 4. Mark near-future pieces as deadline-driven.
 5. Reset deadlines outside range.
@@ -448,7 +448,7 @@ Status: `[ ]`
 
 Tasks:
 
-- [x] Add `CachePolicy` with default `128 MiB`.
+- [x] Add `CachePolicy` with default `256 MiB`.
 - [x] Add player UI control for cache size.
 - [x] Compute retained piece window from playback byte offset.
 - [x] Evict pieces outside retained window in `MemoryDiskIO`.
@@ -522,17 +522,24 @@ Exit criteria:
 
 ### Stage 10: Player UI and UX Completion
 
-Status: `[ ]`
+Status: `[x]`
 
 Tasks:
 
-- [ ] Build player overlay controls.
-- [ ] Build torrent piece rail.
-- [ ] Build buffer settings menu.
-- [ ] Build loading, buffering, stalled, and error overlays.
-- [ ] Add audio track menu.
-- [ ] Add fullscreen behavior.
-- [ ] Add keyboard shortcuts.
+- [x] Build player overlay controls.
+- [x] Build torrent piece rail.
+- [x] Build buffer settings menu.
+- [x] Build loading, buffering, stalled, and error overlays.
+- [x] Add audio track menu.
+- [x] Add fullscreen behavior.
+- [x] Add keyboard shortcuts.
+
+Notes:
+
+- Player controls now use the app-owned overlay instead of mpv OSC: transport, seeking, volume,
+  audio track selection, buffer preset selection, fullscreen, stop, and keyboard shortcuts.
+- The player overlay shows torrent buffer state, RAM cache usage, a compact piece rail, and centered
+  loading/buffering/stalled/error overlays.
 
 Exit criteria:
 
@@ -592,7 +599,7 @@ MVP includes:
 - Video file selection.
 - libmpv playback from torrent-backed stream.
 - Strict RAM-backed payload storage.
-- Configurable rolling buffer with `128 MiB` default.
+- Configurable rolling buffer with `256 MiB` default.
 - Basic player controls.
 - Buffering/error states.
 

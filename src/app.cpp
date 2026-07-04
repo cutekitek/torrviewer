@@ -248,13 +248,29 @@ void Application::key_down(const SDL_KeyboardEvent& key) {
     case SDLK_RIGHT:
       player_->seek_relative(30.0);
       break;
+    case SDLK_HOME:
+      player_->seek_absolute(0.0);
+      break;
+    case SDLK_END:
+      player_->seek_absolute(player_->snapshot().duration);
+      break;
+    case SDLK_PAGEUP:
+      player_->seek_relative(300.0);
+      break;
+    case SDLK_PAGEDOWN:
+      player_->seek_relative(-300.0);
+      break;
     case SDLK_UP:
       player_->adjust_volume(5.0);
       break;
     case SDLK_DOWN:
       player_->adjust_volume(-5.0);
       break;
+    case SDLK_A:
+      player_->select_audio_track_relative(1);
+      break;
     case SDLK_F:
+    case SDLK_F11:
       toggle_fullscreen();
       break;
     default:
@@ -549,10 +565,15 @@ void Application::handle_player_action(ui::PlayerOverlayAction action) {
   case ui::PlayerOverlayAction::seek_forward:
     player_->seek_relative(30.0);
     break;
+  case ui::PlayerOverlayAction::seek_absolute:
+    player_->seek_absolute(player_overlay_.selected_seek_seconds());
+    break;
   case ui::PlayerOverlayAction::set_volume:
     player_->set_volume(player_overlay_.volume_from_pointer(pointer_.x));
     break;
   case ui::PlayerOverlayAction::toggle_audio_menu:
+    break;
+  case ui::PlayerOverlayAction::toggle_buffer_menu:
     break;
   case ui::PlayerOverlayAction::select_audio_track:
     player_->select_audio_track(player_overlay_.selected_audio_track_index());
@@ -608,7 +629,7 @@ void Application::update_player_controls_visibility(Clock::time_point now) {
 
   if (now - player_controls_last_hover_ >= player_controls_hide_delay) {
     player_controls_visible_ = false;
-    player_overlay_.close_audio_menu();
+    player_overlay_.close_menus();
   }
 }
 
@@ -720,8 +741,8 @@ void Application::render_player_screen(float delta_time) {
 
   player_overlay_.begin_frame();
   Clay_BeginLayout();
-  player_overlay_.build(metrics_, player_->snapshot(), is_fullscreen(), player_controls_visible_,
-                        cache_limit_mib_);
+  player_overlay_.build(metrics_, player_->snapshot(), torrent_service_.snapshot(), is_fullscreen(),
+                        player_controls_visible_);
   Clay_RenderCommandArray commands = Clay_EndLayout(delta_time);
   update_player_controls_visibility(Clock::now());
   clay_renderer_->render(commands);
@@ -737,8 +758,8 @@ void Application::log_startup() const {
                     << " thorvg=" << available(has_thorvg));
   TORRVIEW_LOG_INFO("Input shell: drop .torrent files, local video files, or magnet text; press "
                     "Ctrl+O to open a source file, Ctrl+V to paste a magnet link");
-  TORRVIEW_LOG_INFO("Playback controls: Space play/pause, Left/Right seek, Up/Down volume, F "
-                    "fullscreen");
+  TORRVIEW_LOG_INFO("Playback controls: Space play/pause, Left/Right seek, PageUp/PageDown long "
+                    "seek, Up/Down volume, A audio track, F/F11 fullscreen");
 }
 
 } // namespace torrview

@@ -53,9 +53,9 @@ struct TorrentSnapshot {
   std::vector<TorrentFileInfo> files;
   std::vector<TorrentFileInfo> video_files;
   int active_file_index = -1;
-  int cache_limit_mib = 512;
+  int cache_limit_mib = 256;
   std::int64_t cache_bytes_used = 0;
-  std::int64_t cache_bytes_limit = 512LL * 1024LL * 1024LL;
+  std::int64_t cache_bytes_limit = 256LL * 1024LL * 1024LL;
   bool buffering = false;
   bool stalled = false;
   float buffer_progress = 0.0F;

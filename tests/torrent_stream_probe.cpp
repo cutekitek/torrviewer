@@ -59,12 +59,12 @@ lt::settings_pack make_settings(std::string_view listen_interfaces) {
   settings.set_str(lt::settings_pack::user_agent, "TorrviewProbe");
   settings.set_str(lt::settings_pack::listen_interfaces, std::string(listen_interfaces));
   settings.set_bool(lt::settings_pack::enable_dht, true);
-  settings.set_bool(lt::settings_pack::enable_lsd, false);
-  settings.set_bool(lt::settings_pack::enable_upnp, false);
-  settings.set_bool(lt::settings_pack::enable_natpmp, false);
-  settings.set_int(lt::settings_pack::connections_limit, 80);
+  settings.set_bool(lt::settings_pack::enable_lsd, true);
+  settings.set_bool(lt::settings_pack::enable_upnp, true);
+  settings.set_bool(lt::settings_pack::enable_natpmp, true);
+  settings.set_int(lt::settings_pack::connections_limit, 200);
   settings.set_int(lt::settings_pack::upload_rate_limit,
-                   env_int_or_default("TORRVIEW_PROBE_UPLOAD_LIMIT", 16 * 1024));
+                   env_int_or_default("TORRVIEW_PROBE_UPLOAD_LIMIT", 128 * 1024));
   settings.set_int(lt::settings_pack::unchoke_slots_limit,
                    env_int_or_default("TORRVIEW_PROBE_UNCHOKE_SLOTS", 4));
   settings.set_int(lt::settings_pack::num_optimistic_unchoke_slots,
@@ -320,7 +320,7 @@ int main(int argc, char** argv) {
     if (piece >= window.first_piece && piece < window.end_piece) {
       continue;
     }
-    handle.piece_priority(lt::piece_index_t(piece), lt::low_priority);
+    handle.piece_priority(lt::piece_index_t(piece), lt::dont_download);
   }
   handle.set_piece_deadline(lt::piece_index_t(urgent_piece), 0,
                             lt::torrent_handle::alert_when_available);

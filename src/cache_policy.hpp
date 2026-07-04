@@ -7,9 +7,9 @@ namespace torrview {
 struct CachePolicy {
   static constexpr std::int64_t mib = 1024LL * 1024LL;
 
-  std::int64_t max_bytes = 512LL * mib;
-  std::int64_t retain_before_bytes = 128LL * mib;
-  std::int64_t retain_after_bytes = 384LL * mib;
+  std::int64_t max_bytes = 256LL * mib;
+  std::int64_t retain_before_bytes = 64LL * mib;
+  std::int64_t retain_after_bytes = 192LL * mib;
 
   static CachePolicy from_limit_mib(int limit_mib);
   [[nodiscard]] int limit_mib() const;

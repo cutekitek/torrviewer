@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mpv_player.hpp"
+#include "torrent_service.hpp"
 #include "window_state.hpp"
 
 #include "clay.h"
@@ -18,8 +19,10 @@ enum class PlayerOverlayAction {
   toggle_pause,
   seek_back,
   seek_forward,
+  seek_absolute,
   set_volume,
   toggle_audio_menu,
+  toggle_buffer_menu,
   select_audio_track,
   set_cache_size,
   fullscreen,
@@ -30,15 +33,18 @@ class PlayerOverlay {
 public:
   void initialize_ids();
   void begin_frame();
-  void build(const WindowMetrics& metrics, const PlaybackSnapshot& snapshot, bool fullscreen,
-             bool controls_visible, int cache_limit_mib);
+  void build(const WindowMetrics& metrics, const PlaybackSnapshot& snapshot,
+             const TorrentSnapshot& torrent, bool fullscreen, bool controls_visible);
   PlayerOverlayAction hit_test_click();
   bool pointer_over_controls() const;
   bool pointer_over_volume_bar() const;
   double volume_from_pointer(float pointer_x) const;
+  double seek_seconds_from_pointer(float pointer_x) const;
+  double selected_seek_seconds() const;
   std::size_t selected_audio_track_index() const;
   int selected_cache_size_mib() const;
   void close_audio_menu();
+  void close_menus();
 
 private:
   enum class Icon {
@@ -61,19 +67,28 @@ private:
   void icon_button(Clay_ElementId id, Icon icon, bool emphasized = false);
   void audio_track_row(Clay_ElementId id, std::string_view label, bool active);
   void cache_preset_button(Clay_ElementId id, int mib, bool active);
+  void piece_rail(const TorrentSnapshot& torrent, float width);
+  void status_overlay(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent);
 
+  Clay_ElementId root_id_ = {};
   Clay_ElementId play_id_ = {};
   Clay_ElementId control_panel_id_ = {};
+  Clay_ElementId timeline_id_ = {};
   Clay_ElementId seek_back_id_ = {};
   Clay_ElementId seek_forward_id_ = {};
   Clay_ElementId volume_bar_id_ = {};
   Clay_ElementId audio_button_id_ = {};
   Clay_ElementId audio_menu_id_ = {};
+  Clay_ElementId buffer_button_id_ = {};
+  Clay_ElementId buffer_menu_id_ = {};
   Clay_ElementId fullscreen_id_ = {};
   Clay_ElementId stop_id_ = {};
   bool audio_menu_open_ = false;
+  bool buffer_menu_open_ = false;
+  double last_duration_ = 0.0;
+  double selected_seek_seconds_ = 0.0;
   std::size_t selected_audio_track_index_ = 0;
-  int selected_cache_size_mib_ = 512;
+  int selected_cache_size_mib_ = 256;
   std::vector<Clay_ElementId> audio_track_row_ids_;
   std::vector<Clay_ElementId> cache_preset_ids_;
   std::deque<std::string> frame_strings_;
