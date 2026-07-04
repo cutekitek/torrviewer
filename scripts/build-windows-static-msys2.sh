@@ -200,8 +200,10 @@ configure_and_build_app() {
 
   local exe="${build_path}/src/torrview.exe"
   if [[ -f "${exe}" ]]; then
+    strip --strip-all "${exe}"
     echo
     echo "Built ${exe}"
+    ls -lh "${exe}"
     echo "Imported DLLs:"
     objdump -p "${exe}" | sed -n '/DLL Name:/p' || true
   fi
