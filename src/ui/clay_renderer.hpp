@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace torrview::ui {
 
@@ -30,10 +31,14 @@ public:
   void render(Clay_RenderCommandArray commands);
 
 private:
+  static bool has_area(Rect rect);
+  static Rect intersect_rect(Rect left, Rect right);
   float x_scale() const;
   float y_scale() const;
   Rect to_pixels(Rect logical_rect) const;
   Rect to_pixels(Clay_BoundingBox box) const;
+  void push_clip(Rect rect);
+  void pop_clip();
   void set_scissor(Rect rect) const;
   void draw_paint(tvg::Paint* paint);
   void draw_shape_rect(Rect rect, Clay_Color color, Clay_CornerRadius radius);
@@ -46,6 +51,7 @@ private:
   const WindowMetrics& metrics_;
   const char* font_name_ = nullptr;
   std::unique_ptr<tvg::GlCanvas> canvas_;
+  std::vector<Rect> clip_stack_;
   std::unordered_map<std::string, std::unique_ptr<tvg::Picture, decltype(&tvg::Paint::rel)>>
       svg_cache_;
 };

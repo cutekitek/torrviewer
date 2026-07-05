@@ -220,6 +220,74 @@ std::vector<TorrentFileInfo> extract_files(const lt::torrent_info& info) {
   return files;
 }
 
+int compare_natural_path(std::string_view left, std::string_view right) {
+  std::size_t left_index = 0;
+  std::size_t right_index = 0;
+
+  while (left_index < left.size() && right_index < right.size()) {
+    const unsigned char left_char = static_cast<unsigned char>(left[left_index]);
+    const unsigned char right_char = static_cast<unsigned char>(right[right_index]);
+
+    if (std::isdigit(left_char) != 0 && std::isdigit(right_char) != 0) {
+      const std::size_t left_digits_begin = left_index;
+      const std::size_t right_digits_begin = right_index;
+
+      while (left_index < left.size() &&
+             std::isdigit(static_cast<unsigned char>(left[left_index])) != 0) {
+        ++left_index;
+      }
+      while (right_index < right.size() &&
+             std::isdigit(static_cast<unsigned char>(right[right_index])) != 0) {
+        ++right_index;
+      }
+
+      std::size_t left_significant = left_digits_begin;
+      std::size_t right_significant = right_digits_begin;
+      while (left_significant < left_index && left[left_significant] == '0') {
+        ++left_significant;
+      }
+      while (right_significant < right_index && right[right_significant] == '0') {
+        ++right_significant;
+      }
+
+      const std::size_t left_significant_length = left_index - left_significant;
+      const std::size_t right_significant_length = right_index - right_significant;
+      if (left_significant_length != right_significant_length) {
+        return left_significant_length < right_significant_length ? -1 : 1;
+      }
+
+      for (std::size_t offset = 0; offset < left_significant_length; ++offset) {
+        const char left_digit = left[left_significant + offset];
+        const char right_digit = right[right_significant + offset];
+        if (left_digit != right_digit) {
+          return left_digit < right_digit ? -1 : 1;
+        }
+      }
+
+      const std::size_t left_digit_length = left_index - left_digits_begin;
+      const std::size_t right_digit_length = right_index - right_digits_begin;
+      if (left_digit_length != right_digit_length) {
+        return left_digit_length < right_digit_length ? -1 : 1;
+      }
+      continue;
+    }
+
+    const char left_folded = static_cast<char>(std::tolower(left_char));
+    const char right_folded = static_cast<char>(std::tolower(right_char));
+    if (left_folded != right_folded) {
+      return left_folded < right_folded ? -1 : 1;
+    }
+
+    ++left_index;
+    ++right_index;
+  }
+
+  if (left.size() == right.size()) {
+    return 0;
+  }
+  return left.size() < right.size() ? -1 : 1;
+}
+
 std::vector<TorrentFileInfo> filter_video_files(const std::vector<TorrentFileInfo>& files) {
   std::vector<TorrentFileInfo> video_files;
   for (const TorrentFileInfo& file : files) {
@@ -229,10 +297,11 @@ std::vector<TorrentFileInfo> filter_video_files(const std::vector<TorrentFileInf
   }
 
   std::sort(video_files.begin(), video_files.end(), [](const auto& left, const auto& right) {
-    if (left.size != right.size) {
-      return left.size > right.size;
+    const int path_order = compare_natural_path(left.path, right.path);
+    if (path_order != 0) {
+      return path_order < 0;
     }
-    return left.path < right.path;
+    return left.index < right.index;
   });
   return video_files;
 }
@@ -1402,6 +1471,7 @@ public:
         std::make_shared<StreamingScheduler>(handle_, info, file_index, cache_policy_, stream_id);
     scheduler->prepare_initial_priorities();
     active_scheduler_ = scheduler;
+    snapshot_.active_file_index = file_index;
 
     auto stream =
         std::make_shared<TorrentPieceStream>(handle_, info, file_index, scheduler, stream_id);

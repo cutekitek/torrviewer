@@ -64,6 +64,7 @@ private:
   void handle_player_action(ui::PlayerOverlayAction action);
   void update_volume_from_pointer();
   void update_player_controls_visibility(Clock::time_point now);
+  void return_to_torrent_file_browser_after_eof();
   void toggle_fullscreen();
   bool is_fullscreen() const;
   void update_window_metrics();

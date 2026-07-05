@@ -34,6 +34,15 @@ std::string sdl_error(const char* action) {
 
 const char* available(bool value) { return value ? "yes" : "no"; }
 
+const TorrentFileInfo* find_torrent_file(const TorrentSnapshot& snapshot, int file_index) {
+  for (const TorrentFileInfo& file : snapshot.files) {
+    if (file.index == file_index) {
+      return &file;
+    }
+  }
+  return nullptr;
+}
+
 std::vector<char> read_binary_file(const char* path) {
   std::ifstream file(path, std::ios::binary | std::ios::ate);
   if (!file) {
@@ -633,6 +642,23 @@ void Application::update_player_controls_visibility(Clock::time_point now) {
   }
 }
 
+void Application::return_to_torrent_file_browser_after_eof() {
+  if (player_ == nullptr) {
+    return;
+  }
+
+  const PlaybackSnapshot snapshot = player_->snapshot();
+  if (!snapshot.eof_reached || !snapshot.path.starts_with("torrview://")) {
+    return;
+  }
+
+  TORRVIEW_LOG_INFO("Torrent playback ended; returning to file browser");
+  player_->stop();
+  player_controls_visible_ = true;
+  player_overlay_.close_menus();
+  update_window_title();
+}
+
 void Application::toggle_fullscreen() {
   const bool target = !is_fullscreen();
   if (!SDL_SetWindowFullscreen(window_, target)) {
@@ -667,7 +693,12 @@ void Application::update_window_title() {
     title << " - " << input_kind_label(last_input_->kind) << ": "
           << compact_value(last_input_->value, 72);
     if (selected_torrent_file_index_.has_value()) {
-      title << " - file " << *selected_torrent_file_index_;
+      const TorrentSnapshot& torrent = torrent_service_.snapshot();
+      const TorrentFileInfo* file = find_torrent_file(torrent, *selected_torrent_file_index_);
+      title << " - "
+            << compact_value(file != nullptr ? file->path
+                                             : "file " + std::to_string(*selected_torrent_file_index_),
+                             72);
     }
   } else {
     title << " - Drop .torrent, paste magnet, or press Ctrl+O";
@@ -690,6 +721,7 @@ void Application::render() {
   if (player_ != nullptr) {
     player_->process_events();
   }
+  return_to_torrent_file_browser_after_eof();
   torrent_service_.process_alerts();
 
   Clay_SetCurrentContext(clay_context_);

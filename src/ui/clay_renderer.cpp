@@ -128,6 +128,21 @@ float ClayRenderer::y_scale() const {
                                      : metrics_.display_scale;
 }
 
+bool ClayRenderer::has_area(Rect rect) { return rect.width > 0.0F && rect.height > 0.0F; }
+
+Rect ClayRenderer::intersect_rect(Rect left, Rect right) {
+  const float x1 = std::max(left.x, right.x);
+  const float y1 = std::max(left.y, right.y);
+  const float x2 = std::min(left.x + left.width, right.x + right.width);
+  const float y2 = std::min(left.y + left.height, right.y + right.height);
+  return {
+      .x = x1,
+      .y = y1,
+      .width = std::max(0.0F, x2 - x1),
+      .height = std::max(0.0F, y2 - y1),
+  };
+}
+
 Rect ClayRenderer::to_pixels(Rect logical_rect) const {
   return {
       .x = logical_rect.x * x_scale(),
@@ -139,6 +154,35 @@ Rect ClayRenderer::to_pixels(Rect logical_rect) const {
 
 Rect ClayRenderer::to_pixels(Clay_BoundingBox box) const {
   return to_pixels(Rect{.x = box.x, .y = box.y, .width = box.width, .height = box.height});
+}
+
+void ClayRenderer::push_clip(Rect rect) {
+  if (!clip_stack_.empty()) {
+    rect = intersect_rect(clip_stack_.back(), rect);
+  }
+  clip_stack_.push_back(rect);
+  if (has_area(rect)) {
+    set_scissor(rect);
+  } else {
+    gl_api_.disable(GL_SCISSOR_TEST);
+  }
+}
+
+void ClayRenderer::pop_clip() {
+  if (!clip_stack_.empty()) {
+    clip_stack_.pop_back();
+  }
+
+  if (clip_stack_.empty()) {
+    gl_api_.disable(GL_SCISSOR_TEST);
+    return;
+  }
+
+  if (has_area(clip_stack_.back())) {
+    set_scissor(clip_stack_.back());
+  } else {
+    gl_api_.disable(GL_SCISSOR_TEST);
+  }
 }
 
 void ClayRenderer::set_scissor(Rect rect) const {
@@ -157,6 +201,27 @@ void ClayRenderer::set_scissor(Rect rect) const {
 void ClayRenderer::draw_paint(tvg::Paint* paint) {
   if (paint == nullptr) {
     throw std::runtime_error("ThorVG failed to create paint");
+  }
+
+  if (!clip_stack_.empty()) {
+    const Rect clip = clip_stack_.back();
+    if (!has_area(clip)) {
+      tvg::Paint::rel(paint);
+      return;
+    }
+
+    auto* clipper = tvg::Shape::gen();
+    if (clipper == nullptr) {
+      tvg::Paint::rel(paint);
+      throw std::runtime_error("ThorVG failed to create clip shape");
+    }
+
+    if (!ok(clipper->appendRect(clip.x, clip.y, clip.width, clip.height)) ||
+        !ok(paint->clip(clipper))) {
+      tvg::Paint::rel(clipper);
+      tvg::Paint::rel(paint);
+      throw std::runtime_error("ThorVG failed to configure clip shape");
+    }
   }
 
   if (!ok(canvas_->add(paint)) || !ok(canvas_->update()) || !ok(canvas_->draw(false)) ||
@@ -284,6 +349,7 @@ void ClayRenderer::render(Clay_RenderCommandArray commands) {
   }
 
   gl_api_.disable(GL_SCISSOR_TEST);
+  clip_stack_.clear();
   for (int32_t index = 0; index < commands.length; ++index) {
     Clay_RenderCommand* command = Clay_RenderCommandArray_Get(&commands, index);
     if (command == nullptr) {
@@ -306,10 +372,10 @@ void ClayRenderer::render(Clay_RenderCommandArray commands) {
       draw_image_command(rect, command->renderData.image);
       break;
     case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START:
-      set_scissor(rect);
+      push_clip(rect);
       break;
     case CLAY_RENDER_COMMAND_TYPE_SCISSOR_END:
-      gl_api_.disable(GL_SCISSOR_TEST);
+      pop_clip();
       break;
     case CLAY_RENDER_COMMAND_TYPE_NONE:
     case CLAY_RENDER_COMMAND_TYPE_OVERLAY_COLOR_START:
@@ -318,6 +384,7 @@ void ClayRenderer::render(Clay_RenderCommandArray commands) {
       break;
     }
   }
+  clip_stack_.clear();
   gl_api_.disable(GL_SCISSOR_TEST);
 }
 
