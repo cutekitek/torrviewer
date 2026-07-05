@@ -1,10 +1,12 @@
 #include "ui/clay_renderer.hpp"
 
 #include "logger.hpp"
+#include "resources.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -312,20 +314,29 @@ void ClayRenderer::draw_text_command(Rect rect, Clay_TextRenderData text_data) {
 }
 
 void ClayRenderer::draw_image_command(Rect rect, Clay_ImageRenderData image_data) {
-  auto* path = static_cast<const char*>(image_data.imageData);
-  if (path == nullptr || rect.width <= 0.0F || rect.height <= 0.0F) {
+  auto* resource_name = static_cast<const char*>(image_data.imageData);
+  if (resource_name == nullptr || rect.width <= 0.0F || rect.height <= 0.0F) {
     return;
   }
 
-  auto cache_item = svg_cache_.find(path);
+  auto cache_item = svg_cache_.find(resource_name);
   if (cache_item == svg_cache_.end()) {
-    std::unique_ptr<tvg::Picture, decltype(&tvg::Paint::rel)> picture(tvg::Picture::gen(),
-                                                                      &tvg::Paint::rel);
-    if (!picture || !ok(picture->load(path))) {
-      throw std::runtime_error(std::string("ThorVG failed to load SVG icon: ") + path);
+    const auto* resource = resources::find(resource_name);
+    if (resource == nullptr ||
+        resource->size > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+      throw std::runtime_error(std::string("Missing bundled SVG icon resource: ") + resource_name);
     }
 
-    cache_item = svg_cache_.emplace(path, std::move(picture)).first;
+    std::unique_ptr<tvg::Picture, decltype(&tvg::Paint::rel)> picture(tvg::Picture::gen(),
+                                                                      &tvg::Paint::rel);
+    if (!picture || !ok(picture->load(reinterpret_cast<const char*>(resource->data),
+                                      static_cast<uint32_t>(resource->size),
+                                      resource->mime_type.data(), nullptr, true))) {
+      throw std::runtime_error(std::string("ThorVG failed to load SVG icon resource: ") +
+                               resource_name);
+    }
+
+    cache_item = svg_cache_.emplace(resource_name, std::move(picture)).first;
   }
 
   auto* picture = static_cast<tvg::Picture*>(cache_item->second->duplicate());

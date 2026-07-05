@@ -100,7 +100,6 @@ private:
   ui::FileBrowserPage file_browser_page_;
   ui::PlayerOverlay player_overlay_;
   SdlEventManager event_manager_;
-  std::vector<char> font_data_;
   std::vector<char> clay_memory_;
   std::optional<ParsedInput> last_input_;
   std::optional<int> selected_torrent_file_index_;

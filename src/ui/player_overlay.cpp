@@ -1,7 +1,5 @@
 #include "ui/player_overlay.hpp"
 
-#include "config.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -216,42 +214,24 @@ void PlayerOverlay::text(std::string_view value, uint16_t font_size, Clay_Color 
 
 const char* PlayerOverlay::icon_path(Icon icon) const {
   switch (icon) {
-  case Icon::play: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/play.svg";
-    return path.c_str();
-  }
-  case Icon::pause: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/pause.svg";
-    return path.c_str();
-  }
-  case Icon::rewind: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/rewind.svg";
-    return path.c_str();
-  }
-  case Icon::forward: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/forward.svg";
-    return path.c_str();
-  }
-  case Icon::volume: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/volume.svg";
-    return path.c_str();
-  }
-  case Icon::fullscreen: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/fullscreen.svg";
-    return path.c_str();
-  }
-  case Icon::window: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/window.svg";
-    return path.c_str();
-  }
-  case Icon::close: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/close.svg";
-    return path.c_str();
-  }
-  case Icon::audio: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/audio.svg";
-    return path.c_str();
-  }
+  case Icon::play:
+    return "icons/play.svg";
+  case Icon::pause:
+    return "icons/pause.svg";
+  case Icon::rewind:
+    return "icons/rewind.svg";
+  case Icon::forward:
+    return "icons/forward.svg";
+  case Icon::volume:
+    return "icons/volume.svg";
+  case Icon::fullscreen:
+    return "icons/fullscreen.svg";
+  case Icon::window:
+    return "icons/window.svg";
+  case Icon::close:
+    return "icons/close.svg";
+  case Icon::audio:
+    return "icons/audio.svg";
   }
 
   return "";
