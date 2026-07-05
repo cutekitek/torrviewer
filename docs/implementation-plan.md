@@ -502,7 +502,7 @@ Tasks:
 
 - [x] Set initial file priorities.
 - [x] Set urgent piece deadlines for active reads.
-- [x] Maintain ahead buffer with staggered deadlines.
+- [x] Maintain ahead buffer with staggered deadlines and descending piece priorities.
 - [x] Clear stale deadlines on seek.
 - [x] Lower outside-window priorities while keeping the selected file wanted.
 - [x] Track piece state for UI rail.
@@ -511,7 +511,7 @@ Tasks:
 
 Notes:
 
-- `TorrentService` now owns a per-stream scheduler that sets selected-file priority, lowers pieces outside the active retained window, staggers deadlines through the ahead window, and resets deadlines on seeks.
+- `TorrentService` now owns a per-stream scheduler that sets selected-file priority, lowers pieces outside the active retained window, staggers deadlines through the ahead window, evenly ramps piece priority down from the playback cursor to the far edge of the current buffer, and resets deadlines on seeks.
 - Scheduler state is published through `TorrentSnapshot`, including active file, cache usage, buffering/stalled status, ahead-window progress, and per-piece rail state.
 - Cache preset changes now update both scheduler policy and the session-owned RAM disk policy.
 - Debugging showed that a strict `1 B/s` upload cap with zero unchoke slots can prevent useful peer exchange on real swarms even when qBittorrent can download the same torrent. Torrview now defaults to a small capped upload budget and binds to the default IPv4 route instead of announcing from every local/container interface.

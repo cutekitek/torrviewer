@@ -10,6 +10,7 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -183,11 +184,7 @@ lt::settings_pack make_session_settings() {
   settings.set_bool(lt::settings_pack::enable_natpmp, true);
   settings.set_int(lt::settings_pack::connections_limit, 200);
   settings.set_int(lt::settings_pack::upload_rate_limit,
-                   env_int_or_default("TORRVIEW_UPLOAD_RATE_LIMIT", 128 * 1024));
-  settings.set_int(lt::settings_pack::unchoke_slots_limit,
-                   env_int_or_default("TORRVIEW_UNCHOKE_SLOTS", 4));
-  settings.set_int(lt::settings_pack::num_optimistic_unchoke_slots,
-                   env_int_or_default("TORRVIEW_OPTIMISTIC_UNCHOKE_SLOTS", 1));
+                   env_int_or_default("TORRVIEW_UPLOAD_RATE_LIMIT", 1024 * 1024));
   settings.set_int(lt::settings_pack::alert_mask,
                    lt::alert_category::error | lt::alert_category::status |
                        lt::alert_category::tracker | lt::alert_category::dht |
@@ -686,12 +683,19 @@ private:
     bool clear_deadlines = false;
     std::vector<int> reset_deadlines;
     std::vector<int> background_priority;
-    std::vector<std::pair<int, int>> deadlines;
+    struct ScheduledPiece {
+      int piece = 0;
+      int deadline_ms = 0;
+      lt::download_priority_t priority = lt::low_priority;
+    };
+    std::vector<ScheduledPiece> deadlines;
   };
 
   static constexpr auto stalled_timeout = std::chrono::seconds(15);
   static constexpr int deadline_step_ms = 150;
   static constexpr int max_deadline_ms = 30000;
+  static constexpr int min_stream_priority = 1;
+  static constexpr int max_stream_priority = 7;
 
   [[nodiscard]] std::int64_t last_file_position() const {
     std::lock_guard lock(mutex_);
@@ -704,6 +708,20 @@ private:
     }
     return std::clamp(static_cast<int>(torrent_offset / piece_length_), 0,
                       std::max(0, total_pieces_ - 1));
+  }
+
+  [[nodiscard]] static lt::download_priority_t piece_priority_for_buffer_position(
+      int sequence, int total) {
+    if (total <= 1) {
+      return lt::top_priority;
+    }
+
+    const int clamped_sequence = std::clamp(sequence, 0, total - 1);
+    const int priority = max_stream_priority -
+                         ((max_stream_priority - min_stream_priority) * clamped_sequence) /
+                             (total - 1);
+    return lt::download_priority_t{
+        static_cast<std::uint8_t>(std::clamp(priority, min_stream_priority, max_stream_priority))};
   }
 
   SchedulerWork build_work_locked(std::int64_t torrent_offset, bool clear_deadlines) {
@@ -733,13 +751,17 @@ private:
       }
     }
 
-    int sequence = 0;
-    for (int piece = std::max(current_piece, next_window.first_piece);
-         piece < next_window.end_piece; ++piece) {
+    const int first_scheduled_piece = std::max(current_piece, next_window.first_piece);
+    const int scheduled_piece_count = std::max(0, next_window.end_piece - first_scheduled_piece);
+    for (int piece = first_scheduled_piece; piece < next_window.end_piece; ++piece) {
+      const int sequence = piece - first_scheduled_piece;
       const int deadline = std::min(max_deadline_ms, sequence * deadline_step_ms);
-      work.deadlines.emplace_back(piece, deadline);
+      work.deadlines.push_back({
+          .piece = piece,
+          .deadline_ms = deadline,
+          .priority = piece_priority_for_buffer_position(sequence, scheduled_piece_count),
+      });
       next_deadlines.insert(piece);
-      ++sequence;
     }
 
     if (!clear_deadlines) {
@@ -780,11 +802,11 @@ private:
         handle_.piece_priority(lt::piece_index_t(piece), lt::dont_download);
       }
 
-      for (const auto& [piece, deadline] : work.deadlines) {
-        const lt::piece_index_t piece_index(piece);
-        handle_.piece_priority(piece_index, lt::top_priority);
+      for (const SchedulerWork::ScheduledPiece& scheduled : work.deadlines) {
+        const lt::piece_index_t piece_index(scheduled.piece);
+        handle_.piece_priority(piece_index, scheduled.priority);
         if (!handle_.have_piece(piece_index)) {
-          handle_.set_piece_deadline(piece_index, deadline);
+          handle_.set_piece_deadline(piece_index, scheduled.deadline_ms);
         }
       }
     } catch (const std::exception&) {
