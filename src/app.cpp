@@ -2,13 +2,13 @@
 
 #include "config.hpp"
 #include "logger.hpp"
+#include "resources.hpp"
 
 #include <thorvg.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <exception>
-#include <fstream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -34,25 +34,13 @@ std::string sdl_error(const char* action) {
 
 const char* available(bool value) { return value ? "yes" : "no"; }
 
-std::vector<char> read_binary_file(const char* path) {
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
-  if (!file) {
-    throw std::runtime_error(std::string("Failed to open font: ") + path);
+const TorrentFileInfo* find_torrent_file(const TorrentSnapshot& snapshot, int file_index) {
+  for (const TorrentFileInfo& file : snapshot.files) {
+    if (file.index == file_index) {
+      return &file;
+    }
   }
-
-  const std::streamsize size = file.tellg();
-  if (size <= 0 || static_cast<unsigned long long>(size) >
-                       static_cast<unsigned long long>(std::numeric_limits<uint32_t>::max())) {
-    throw std::runtime_error(std::string("Invalid font size: ") + path);
-  }
-
-  std::vector<char> data(static_cast<std::size_t>(size));
-  file.seekg(0, std::ios::beg);
-  if (!file.read(data.data(), size)) {
-    throw std::runtime_error(std::string("Failed to read font: ") + path);
-  }
-
-  return data;
+  return nullptr;
 }
 
 void SDLCALL open_file_dialog_callback(void*, const char* const* filelist, int) {
@@ -388,9 +376,14 @@ void Application::initialize_text_renderer() {
   }
   thorvg_initialized_ = true;
 
-  font_data_ = read_binary_file(TORRVIEW_FONT_PATH);
-  if (tvg::Text::load(font_name_, font_data_.data(), static_cast<uint32_t>(font_data_.size()),
-                      "ttf", true) != tvg::Result::Success) {
+  const auto* font = resources::find("fonts/NotoSans-Regular.ttf");
+  if (font == nullptr || font->size > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+    throw std::runtime_error("Bundled Noto Sans font resource is missing or too large");
+  }
+
+  if (tvg::Text::load(font_name_, reinterpret_cast<const char*>(font->data),
+                      static_cast<uint32_t>(font->size), font->mime_type.data(),
+                      true) != tvg::Result::Success) {
     throw std::runtime_error("ThorVG failed to load bundled Noto Sans font");
   }
 
@@ -633,6 +626,23 @@ void Application::update_player_controls_visibility(Clock::time_point now) {
   }
 }
 
+void Application::return_to_torrent_file_browser_after_eof() {
+  if (player_ == nullptr) {
+    return;
+  }
+
+  const PlaybackSnapshot snapshot = player_->snapshot();
+  if (!snapshot.eof_reached || !snapshot.path.starts_with("torrview://")) {
+    return;
+  }
+
+  TORRVIEW_LOG_INFO("Torrent playback ended; returning to file browser");
+  player_->stop();
+  player_controls_visible_ = true;
+  player_overlay_.close_menus();
+  update_window_title();
+}
+
 void Application::toggle_fullscreen() {
   const bool target = !is_fullscreen();
   if (!SDL_SetWindowFullscreen(window_, target)) {
@@ -667,7 +677,12 @@ void Application::update_window_title() {
     title << " - " << input_kind_label(last_input_->kind) << ": "
           << compact_value(last_input_->value, 72);
     if (selected_torrent_file_index_.has_value()) {
-      title << " - file " << *selected_torrent_file_index_;
+      const TorrentSnapshot& torrent = torrent_service_.snapshot();
+      const TorrentFileInfo* file = find_torrent_file(torrent, *selected_torrent_file_index_);
+      title << " - "
+            << compact_value(file != nullptr ? file->path
+                                             : "file " + std::to_string(*selected_torrent_file_index_),
+                             72);
     }
   } else {
     title << " - Drop .torrent, paste magnet, or press Ctrl+O";
@@ -690,6 +705,7 @@ void Application::render() {
   if (player_ != nullptr) {
     player_->process_events();
   }
+  return_to_torrent_file_browser_after_eof();
   torrent_service_.process_alerts();
 
   Clay_SetCurrentContext(clay_context_);

@@ -1,7 +1,5 @@
 #include "ui/player_overlay.hpp"
 
-#include "config.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -60,23 +58,51 @@ std::string format_time(double seconds) {
   return out.str();
 }
 
-std::string filename_title(const PlaybackSnapshot& snapshot) {
-  if (snapshot.path.empty()) {
+const TorrentFileInfo* find_torrent_file(const TorrentSnapshot& torrent, int file_index) {
+  for (const TorrentFileInfo& file : torrent.files) {
+    if (file.index == file_index) {
+      return &file;
+    }
+  }
+  return nullptr;
+}
+
+std::string compact_title(std::string title) {
+  constexpr std::size_t max_title_length = 46;
+  if (title.size() <= max_title_length) {
+    return title;
+  }
+
+  return title.substr(0, max_title_length - 3) + "...";
+}
+
+std::string filename_from_path(std::string_view value) {
+  if (value.empty()) {
     return "Local playback";
   }
 
-  std::filesystem::path path(snapshot.path);
+  std::filesystem::path path{std::string(value)};
   std::string filename = path.filename().string();
   if (filename.empty()) {
-    filename = snapshot.path;
+    filename = std::string(value);
   }
 
-  constexpr std::size_t max_title_length = 46;
-  if (filename.size() <= max_title_length) {
-    return filename;
+  return compact_title(std::move(filename));
+}
+
+std::string playback_title(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent) {
+  if (snapshot.path.starts_with("torrview://")) {
+    if (const TorrentFileInfo* file = find_torrent_file(torrent, torrent.active_file_index);
+        file != nullptr) {
+      return filename_from_path(file->path);
+    }
+
+    if (!snapshot.media_title.empty()) {
+      return compact_title(snapshot.media_title);
+    }
   }
 
-  return filename.substr(0, max_title_length - 3) + "...";
+  return filename_from_path(snapshot.path);
 }
 
 std::string format_bytes(std::int64_t bytes) {
@@ -188,42 +214,24 @@ void PlayerOverlay::text(std::string_view value, uint16_t font_size, Clay_Color 
 
 const char* PlayerOverlay::icon_path(Icon icon) const {
   switch (icon) {
-  case Icon::play: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/play.svg";
-    return path.c_str();
-  }
-  case Icon::pause: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/pause.svg";
-    return path.c_str();
-  }
-  case Icon::rewind: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/rewind.svg";
-    return path.c_str();
-  }
-  case Icon::forward: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/forward.svg";
-    return path.c_str();
-  }
-  case Icon::volume: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/volume.svg";
-    return path.c_str();
-  }
-  case Icon::fullscreen: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/fullscreen.svg";
-    return path.c_str();
-  }
-  case Icon::window: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/window.svg";
-    return path.c_str();
-  }
-  case Icon::close: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/close.svg";
-    return path.c_str();
-  }
-  case Icon::audio: {
-    static const std::string path = std::string(TORRVIEW_ICON_DIR) + "/audio.svg";
-    return path.c_str();
-  }
+  case Icon::play:
+    return "icons/play.svg";
+  case Icon::pause:
+    return "icons/pause.svg";
+  case Icon::rewind:
+    return "icons/rewind.svg";
+  case Icon::forward:
+    return "icons/forward.svg";
+  case Icon::volume:
+    return "icons/volume.svg";
+  case Icon::fullscreen:
+    return "icons/fullscreen.svg";
+  case Icon::window:
+    return "icons/window.svg";
+  case Icon::close:
+    return "icons/close.svg";
+  case Icon::audio:
+    return "icons/audio.svg";
   }
 
   return "";
@@ -373,7 +381,7 @@ void PlayerOverlay::build(const WindowMetrics& metrics, const PlaybackSnapshot& 
                                    std::clamp(snapshot.time_pos / snapshot.duration, 0.0, 1.0))
                              : 0.0F;
   const bool torrent_playback = has_torrent_playback_state(torrent);
-  const std::string title = filename_title(snapshot);
+  const std::string title = playback_title(snapshot, torrent);
   const std::string time_label =
       format_time(snapshot.time_pos) + " / " + format_time(snapshot.duration);
   const std::string tracks = "V " + std::to_string(snapshot.video_tracks) + "  A " +

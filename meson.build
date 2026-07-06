@@ -223,6 +223,22 @@ clay_dep = declare_dependency(
   include_directories: include_directories('third_party/clay', is_system: true),
 )
 
+resource_files = files(
+  'assets/fonts/NotoSans-Regular.ttf',
+  'assets/icons/audio-next.svg',
+  'assets/icons/audio-prev.svg',
+  'assets/icons/audio.svg',
+  'assets/icons/close.svg',
+  'assets/icons/forward.svg',
+  'assets/icons/fullscreen.svg',
+  'assets/icons/pause.svg',
+  'assets/icons/play.svg',
+  'assets/icons/rewind.svg',
+  'assets/icons/volume.svg',
+  'assets/icons/window.svg',
+)
+resource_packer = files('scripts/pack_resources.py')
+
 torrview_deps = [
   sdl3_dep,
   opengl_dep,
@@ -237,8 +253,6 @@ endforeach
 
 config = configuration_data()
 config.set_quoted('TORRVIEW_VERSION', meson.project_version())
-config.set_quoted('TORRVIEW_FONT_PATH', meson.project_source_root() / 'assets' / 'fonts' / 'NotoSans-Regular.ttf')
-config.set_quoted('TORRVIEW_ICON_DIR', meson.project_source_root() / 'assets' / 'icons')
 config.set('TORRVIEW_HAVE_MPV', mpv_dep.found())
 config.set('TORRVIEW_HAVE_LIBTORRENT', libtorrent_dep.found())
 config.set('TORRVIEW_HAVE_FREETYPE', freetype_dep.found())

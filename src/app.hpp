@@ -64,6 +64,7 @@ private:
   void handle_player_action(ui::PlayerOverlayAction action);
   void update_volume_from_pointer();
   void update_player_controls_visibility(Clock::time_point now);
+  void return_to_torrent_file_browser_after_eof();
   void toggle_fullscreen();
   bool is_fullscreen() const;
   void update_window_metrics();
@@ -99,7 +100,6 @@ private:
   ui::FileBrowserPage file_browser_page_;
   ui::PlayerOverlay player_overlay_;
   SdlEventManager event_manager_;
-  std::vector<char> font_data_;
   std::vector<char> clay_memory_;
   std::optional<ParsedInput> last_input_;
   std::optional<int> selected_torrent_file_index_;

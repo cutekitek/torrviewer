@@ -1,3 +1,21 @@
+python = import('python').find_installation()
+
+packed_resources = custom_target(
+  'packed_resources',
+  input: resource_files,
+  output: ['resources.cpp', 'resources.hpp'],
+  command: [
+    python,
+    meson.project_source_root() / 'scripts' / 'pack_resources.py',
+    '--prefix', meson.project_source_root() / 'assets',
+    '--source', '@OUTPUT0@',
+    '--header', '@OUTPUT1@',
+    '--namespace', 'torrview::resources',
+    '@INPUT@',
+  ],
+  depend_files: resource_packer,
+)
+
 torrview_sources = files(
   'app.cpp',
   'cache_policy.cpp',
@@ -20,7 +38,7 @@ production_win_subsystem = windows_host ? 'windows' : 'console'
 
 executable(
   'torrview',
-  torrview_sources,
+  torrview_sources + packed_resources,
   dependencies: torrview_deps,
   include_directories: config_inc,
   win_subsystem: production_win_subsystem,

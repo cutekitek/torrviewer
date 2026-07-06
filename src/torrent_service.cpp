@@ -10,6 +10,7 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -183,11 +184,7 @@ lt::settings_pack make_session_settings() {
   settings.set_bool(lt::settings_pack::enable_natpmp, true);
   settings.set_int(lt::settings_pack::connections_limit, 200);
   settings.set_int(lt::settings_pack::upload_rate_limit,
-                   env_int_or_default("TORRVIEW_UPLOAD_RATE_LIMIT", 128 * 1024));
-  settings.set_int(lt::settings_pack::unchoke_slots_limit,
-                   env_int_or_default("TORRVIEW_UNCHOKE_SLOTS", 4));
-  settings.set_int(lt::settings_pack::num_optimistic_unchoke_slots,
-                   env_int_or_default("TORRVIEW_OPTIMISTIC_UNCHOKE_SLOTS", 1));
+                   env_int_or_default("TORRVIEW_UPLOAD_RATE_LIMIT", 1024 * 1024));
   settings.set_int(lt::settings_pack::alert_mask,
                    lt::alert_category::error | lt::alert_category::status |
                        lt::alert_category::tracker | lt::alert_category::dht |
@@ -223,6 +220,74 @@ std::vector<TorrentFileInfo> extract_files(const lt::torrent_info& info) {
   return files;
 }
 
+int compare_natural_path(std::string_view left, std::string_view right) {
+  std::size_t left_index = 0;
+  std::size_t right_index = 0;
+
+  while (left_index < left.size() && right_index < right.size()) {
+    const unsigned char left_char = static_cast<unsigned char>(left[left_index]);
+    const unsigned char right_char = static_cast<unsigned char>(right[right_index]);
+
+    if (std::isdigit(left_char) != 0 && std::isdigit(right_char) != 0) {
+      const std::size_t left_digits_begin = left_index;
+      const std::size_t right_digits_begin = right_index;
+
+      while (left_index < left.size() &&
+             std::isdigit(static_cast<unsigned char>(left[left_index])) != 0) {
+        ++left_index;
+      }
+      while (right_index < right.size() &&
+             std::isdigit(static_cast<unsigned char>(right[right_index])) != 0) {
+        ++right_index;
+      }
+
+      std::size_t left_significant = left_digits_begin;
+      std::size_t right_significant = right_digits_begin;
+      while (left_significant < left_index && left[left_significant] == '0') {
+        ++left_significant;
+      }
+      while (right_significant < right_index && right[right_significant] == '0') {
+        ++right_significant;
+      }
+
+      const std::size_t left_significant_length = left_index - left_significant;
+      const std::size_t right_significant_length = right_index - right_significant;
+      if (left_significant_length != right_significant_length) {
+        return left_significant_length < right_significant_length ? -1 : 1;
+      }
+
+      for (std::size_t offset = 0; offset < left_significant_length; ++offset) {
+        const char left_digit = left[left_significant + offset];
+        const char right_digit = right[right_significant + offset];
+        if (left_digit != right_digit) {
+          return left_digit < right_digit ? -1 : 1;
+        }
+      }
+
+      const std::size_t left_digit_length = left_index - left_digits_begin;
+      const std::size_t right_digit_length = right_index - right_digits_begin;
+      if (left_digit_length != right_digit_length) {
+        return left_digit_length < right_digit_length ? -1 : 1;
+      }
+      continue;
+    }
+
+    const char left_folded = static_cast<char>(std::tolower(left_char));
+    const char right_folded = static_cast<char>(std::tolower(right_char));
+    if (left_folded != right_folded) {
+      return left_folded < right_folded ? -1 : 1;
+    }
+
+    ++left_index;
+    ++right_index;
+  }
+
+  if (left.size() == right.size()) {
+    return 0;
+  }
+  return left.size() < right.size() ? -1 : 1;
+}
+
 std::vector<TorrentFileInfo> filter_video_files(const std::vector<TorrentFileInfo>& files) {
   std::vector<TorrentFileInfo> video_files;
   for (const TorrentFileInfo& file : files) {
@@ -232,10 +297,11 @@ std::vector<TorrentFileInfo> filter_video_files(const std::vector<TorrentFileInf
   }
 
   std::sort(video_files.begin(), video_files.end(), [](const auto& left, const auto& right) {
-    if (left.size != right.size) {
-      return left.size > right.size;
+    const int path_order = compare_natural_path(left.path, right.path);
+    if (path_order != 0) {
+      return path_order < 0;
     }
-    return left.path < right.path;
+    return left.index < right.index;
   });
   return video_files;
 }
@@ -686,12 +752,19 @@ private:
     bool clear_deadlines = false;
     std::vector<int> reset_deadlines;
     std::vector<int> background_priority;
-    std::vector<std::pair<int, int>> deadlines;
+    struct ScheduledPiece {
+      int piece = 0;
+      int deadline_ms = 0;
+      lt::download_priority_t priority = lt::low_priority;
+    };
+    std::vector<ScheduledPiece> deadlines;
   };
 
   static constexpr auto stalled_timeout = std::chrono::seconds(15);
   static constexpr int deadline_step_ms = 150;
   static constexpr int max_deadline_ms = 30000;
+  static constexpr int min_stream_priority = 1;
+  static constexpr int max_stream_priority = 7;
 
   [[nodiscard]] std::int64_t last_file_position() const {
     std::lock_guard lock(mutex_);
@@ -704,6 +777,20 @@ private:
     }
     return std::clamp(static_cast<int>(torrent_offset / piece_length_), 0,
                       std::max(0, total_pieces_ - 1));
+  }
+
+  [[nodiscard]] static lt::download_priority_t piece_priority_for_buffer_position(
+      int sequence, int total) {
+    if (total <= 1) {
+      return lt::top_priority;
+    }
+
+    const int clamped_sequence = std::clamp(sequence, 0, total - 1);
+    const int priority = max_stream_priority -
+                         ((max_stream_priority - min_stream_priority) * clamped_sequence) /
+                             (total - 1);
+    return lt::download_priority_t{
+        static_cast<std::uint8_t>(std::clamp(priority, min_stream_priority, max_stream_priority))};
   }
 
   SchedulerWork build_work_locked(std::int64_t torrent_offset, bool clear_deadlines) {
@@ -733,13 +820,17 @@ private:
       }
     }
 
-    int sequence = 0;
-    for (int piece = std::max(current_piece, next_window.first_piece);
-         piece < next_window.end_piece; ++piece) {
+    const int first_scheduled_piece = std::max(current_piece, next_window.first_piece);
+    const int scheduled_piece_count = std::max(0, next_window.end_piece - first_scheduled_piece);
+    for (int piece = first_scheduled_piece; piece < next_window.end_piece; ++piece) {
+      const int sequence = piece - first_scheduled_piece;
       const int deadline = std::min(max_deadline_ms, sequence * deadline_step_ms);
-      work.deadlines.emplace_back(piece, deadline);
+      work.deadlines.push_back({
+          .piece = piece,
+          .deadline_ms = deadline,
+          .priority = piece_priority_for_buffer_position(sequence, scheduled_piece_count),
+      });
       next_deadlines.insert(piece);
-      ++sequence;
     }
 
     if (!clear_deadlines) {
@@ -780,11 +871,11 @@ private:
         handle_.piece_priority(lt::piece_index_t(piece), lt::dont_download);
       }
 
-      for (const auto& [piece, deadline] : work.deadlines) {
-        const lt::piece_index_t piece_index(piece);
-        handle_.piece_priority(piece_index, lt::top_priority);
+      for (const SchedulerWork::ScheduledPiece& scheduled : work.deadlines) {
+        const lt::piece_index_t piece_index(scheduled.piece);
+        handle_.piece_priority(piece_index, scheduled.priority);
         if (!handle_.have_piece(piece_index)) {
-          handle_.set_piece_deadline(piece_index, deadline);
+          handle_.set_piece_deadline(piece_index, scheduled.deadline_ms);
         }
       }
     } catch (const std::exception&) {
@@ -1380,6 +1471,7 @@ public:
         std::make_shared<StreamingScheduler>(handle_, info, file_index, cache_policy_, stream_id);
     scheduler->prepare_initial_priorities();
     active_scheduler_ = scheduler;
+    snapshot_.active_file_index = file_index;
 
     auto stream =
         std::make_shared<TorrentPieceStream>(handle_, info, file_index, scheduler, stream_id);
