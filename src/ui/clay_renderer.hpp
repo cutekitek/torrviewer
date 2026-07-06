@@ -9,6 +9,7 @@
 #include <thorvg.h>
 
 #include <memory>
+#include <cstddef>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -41,7 +42,8 @@ private:
   void push_clip(Rect rect);
   void pop_clip();
   void set_scissor(Rect rect) const;
-  void draw_paint(tvg::Paint* paint);
+  void queue_paint(tvg::Paint* paint);
+  void flush_paints();
   void draw_shape_rect(Rect rect, Clay_Color color, Clay_CornerRadius radius);
   void draw_border(Rect rect, Clay_BorderRenderData border);
   void draw_text_command(Rect rect, Clay_TextRenderData text_data);
@@ -53,6 +55,7 @@ private:
   const char* font_name_ = nullptr;
   std::unique_ptr<tvg::GlCanvas> canvas_;
   std::vector<Rect> clip_stack_;
+  std::size_t queued_paint_count_ = 0;
   std::unordered_map<std::string, std::unique_ptr<tvg::Picture, decltype(&tvg::Paint::rel)>>
       svg_cache_;
 };

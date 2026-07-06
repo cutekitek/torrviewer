@@ -207,7 +207,7 @@ void ClayRenderer::set_scissor(Rect rect) const {
                   clamped_height);
 }
 
-void ClayRenderer::draw_paint(tvg::Paint* paint) {
+void ClayRenderer::queue_paint(tvg::Paint* paint) {
   if (paint == nullptr) {
     throw std::runtime_error("ThorVG failed to create paint");
   }
@@ -233,13 +233,29 @@ void ClayRenderer::draw_paint(tvg::Paint* paint) {
     }
   }
 
-  if (!ok(canvas_->add(paint)) || !ok(canvas_->update()) || !ok(canvas_->draw(false)) ||
-      !ok(canvas_->sync())) {
+  if (!ok(canvas_->add(paint))) {
+    tvg::Paint::rel(paint);
     canvas_->remove();
+    queued_paint_count_ = 0;
+    throw std::runtime_error("ThorVG GL canvas add failed");
+  }
+
+  ++queued_paint_count_;
+}
+
+void ClayRenderer::flush_paints() {
+  if (queued_paint_count_ == 0) {
+    return;
+  }
+
+  if (!ok(canvas_->update()) || !ok(canvas_->draw(false)) || !ok(canvas_->sync())) {
+    canvas_->remove();
+    queued_paint_count_ = 0;
     throw std::runtime_error("ThorVG GL draw failed");
   }
 
   canvas_->remove();
+  queued_paint_count_ = 0;
 }
 
 void ClayRenderer::draw_shape_rect(Rect rect, Clay_Color color, Clay_CornerRadius radius) {
@@ -259,7 +275,7 @@ void ClayRenderer::draw_shape_rect(Rect rect, Clay_Color color, Clay_CornerRadiu
     throw std::runtime_error("ThorVG failed to configure rectangle");
   }
 
-  draw_paint(shape);
+  queue_paint(shape);
 }
 
 void ClayRenderer::draw_border(Rect rect, Clay_BorderRenderData border) {
@@ -293,7 +309,7 @@ void ClayRenderer::draw_border(Rect rect, Clay_BorderRenderData border) {
     throw std::runtime_error("ThorVG failed to configure border");
   }
 
-  draw_paint(shape);
+  queue_paint(shape);
 }
 
 void ClayRenderer::draw_text_command(Rect rect, Clay_TextRenderData text_data) {
@@ -317,7 +333,7 @@ void ClayRenderer::draw_text_command(Rect rect, Clay_TextRenderData text_data) {
     throw std::runtime_error("ThorVG failed to configure text");
   }
 
-  draw_paint(text_paint);
+  queue_paint(text_paint);
 }
 
 void ClayRenderer::draw_image_command(Rect rect, Clay_ImageRenderData image_data) {
@@ -356,10 +372,11 @@ void ClayRenderer::draw_image_command(Rect rect, Clay_ImageRenderData image_data
     throw std::runtime_error("ThorVG failed to configure SVG icon");
   }
 
-  draw_paint(picture);
+  queue_paint(picture);
 }
 
 void ClayRenderer::render(Clay_RenderCommandArray commands) {
+  queued_paint_count_ = 0;
   if (!ok(canvas_->target(
           nullptr, nullptr, context_, 0, static_cast<uint32_t>(metrics_.pixel_width),
           static_cast<uint32_t>(metrics_.pixel_height), tvg::ColorSpace::ABGR8888S))) {
@@ -402,6 +419,7 @@ void ClayRenderer::render(Clay_RenderCommandArray commands) {
       break;
     }
   }
+  flush_paints();
   clip_stack_.clear();
   gl_api_.disable(GL_SCISSOR_TEST);
 }

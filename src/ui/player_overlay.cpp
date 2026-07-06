@@ -310,7 +310,7 @@ void PlayerOverlay::piece_rail(const TorrentSnapshot& torrent, float width) {
     } else {
       const std::size_t piece_count = torrent.piece_states.size();
       const std::size_t max_segments =
-          static_cast<std::size_t>(std::clamp(width / 4.0F, 36.0F, 220.0F));
+          static_cast<std::size_t>(std::clamp(width / 8.0F, 32.0F, 120.0F));
       const std::size_t segments = std::min(piece_count, max_segments);
       for (std::size_t segment = 0; segment < segments; ++segment) {
         const std::size_t begin = (segment * piece_count) / segments;
