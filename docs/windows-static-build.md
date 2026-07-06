@@ -32,3 +32,11 @@ $env:ENABLE_UPX = "0"
 ```
 
 The script prints imported DLLs for `torrview.exe` after the build. A fully static MinGW build should only list Windows system DLLs such as `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `OPENGL32.dll`, and similar OS libraries.
+
+`torrview.exe` is built as a Windows GUI application, so launching the production executable does not open a separate command window. For development or testing with console logging, build the opt-in debug target after configuring:
+
+```sh
+meson compile -C build-windows-static torrview-debug
+```
+
+That produces `build-windows-static/src/torrview-debug.exe`, which keeps the Windows console subsystem.

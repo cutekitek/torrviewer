@@ -15,10 +15,26 @@ torrview_sources = files(
   'ui/title_page.cpp',
 )
 
+windows_host = host_machine.system() == 'windows'
+production_win_subsystem = windows_host ? 'windows' : 'console'
+
 executable(
   'torrview',
   torrview_sources,
   dependencies: torrview_deps,
   include_directories: config_inc,
+  win_subsystem: production_win_subsystem,
   install: true,
 )
+
+if windows_host
+  executable(
+    'torrview-debug',
+    torrview_sources,
+    dependencies: torrview_deps,
+    include_directories: config_inc,
+    win_subsystem: 'console',
+    build_by_default: false,
+    install: false,
+  )
+endif

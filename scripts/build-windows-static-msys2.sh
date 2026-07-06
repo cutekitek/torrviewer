@@ -12,7 +12,6 @@ ffmpeg_ref="${FFMPEG_REF:-n7.1.1}"
 libplacebo_ref="${LIBPLACEBO_REF:-v7.360.1}"
 ffmpeg_enable_small="${FFMPEG_ENABLE_SMALL:-1}"
 enable_upx="${ENABLE_UPX:-1}"
-enable_lto="${ENABLE_LTO:-0}"
 log_dir="${repo_root}/build/logs"
 log_file="${log_dir}/windows-static-$(date +%Y%m%d-%H%M%S).log"
 
@@ -30,7 +29,6 @@ echo "Logging to ${log_file}"
 echo "Dependency root: ${deps_root}"
 echo "FFmpeg --enable-small: ${ffmpeg_enable_small}"
 echo "UPX compression: ${enable_upx}"
-echo "LTO: ${enable_lto}"
 
 case "${MSYSTEM:-}" in
   UCRT64) package_prefix="mingw-w64-ucrt-x86_64" ;;
@@ -225,10 +223,6 @@ configure_and_build_app() {
     -Dfreetype=enabled \
     -Dfontconfig=enabled
   )
-
-  if is_enabled "${enable_lto}"; then
-    meson_args+=(-Db_lto=true)
-  fi
 
   meson "${meson_args[@]}"
 
