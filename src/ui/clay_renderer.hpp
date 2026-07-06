@@ -17,6 +17,7 @@ namespace torrview::ui {
 
 struct TextMeasureState {
   const char* font_name = nullptr;
+  std::unique_ptr<tvg::Text, decltype(&tvg::Paint::rel)> text = {nullptr, &tvg::Paint::rel};
 };
 
 Clay_Dimensions measure_text(Clay_StringSlice text, Clay_TextElementConfig* config,

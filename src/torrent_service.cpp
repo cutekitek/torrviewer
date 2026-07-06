@@ -88,19 +88,6 @@ std::string compact_alert_detail(std::string value) {
   return value;
 }
 
-int env_int_or_default(const char* name, int fallback) {
-  const char* value = std::getenv(name);
-  if (value == nullptr || value[0] == '\0') {
-    return fallback;
-  }
-
-  try {
-    return std::stoi(value);
-  } catch (const std::exception&) {
-    return fallback;
-  }
-}
-
 #if defined(__linux__)
 std::optional<std::string> linux_default_route_interface() {
   std::ifstream routes("/proc/net/route");
@@ -171,7 +158,110 @@ std::string default_listen_interfaces() {
   return "0.0.0.0:0";
 }
 
-lt::settings_pack make_session_settings() {
+struct ParsedProxyUrl {
+  lt::settings_pack::proxy_type_t type = lt::settings_pack::none;
+  std::string host;
+  std::string username;
+  std::string password;
+  int port = 0;
+};
+
+std::optional<ParsedProxyUrl> parse_proxy_url(const std::string& url) {
+  if (trim(url).empty()) {
+    return ParsedProxyUrl{};
+  }
+
+  const std::size_t scheme_end = url.find("://");
+  if (scheme_end == std::string::npos) {
+    return std::nullopt;
+  }
+
+  std::string scheme = url.substr(0, scheme_end);
+  std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+  ParsedProxyUrl proxy;
+  if (scheme == "socks4") {
+    proxy.type = lt::settings_pack::socks4;
+    proxy.port = 1080;
+  } else if (scheme == "socks5") {
+    proxy.type = lt::settings_pack::socks5;
+    proxy.port = 1080;
+  } else if (scheme == "http") {
+    proxy.type = lt::settings_pack::http;
+    proxy.port = 8080;
+  } else {
+    return std::nullopt;
+  }
+
+  std::string authority = url.substr(scheme_end + 3);
+  if (const std::size_t path_begin = authority.find('/'); path_begin != std::string::npos) {
+    authority.resize(path_begin);
+  }
+
+  if (const std::size_t at = authority.rfind('@'); at != std::string::npos) {
+    const std::string credentials = authority.substr(0, at);
+    authority.erase(0, at + 1);
+    if (const std::size_t colon = credentials.find(':'); colon != std::string::npos) {
+      proxy.username = credentials.substr(0, colon);
+      proxy.password = credentials.substr(colon + 1);
+    } else {
+      proxy.username = credentials;
+    }
+  }
+
+  const std::size_t port_separator = authority.rfind(':');
+  if (port_separator == std::string::npos || port_separator + 1 >= authority.size()) {
+    proxy.host = authority;
+  } else {
+    proxy.host = authority.substr(0, port_separator);
+    try {
+      proxy.port = std::clamp(std::stoi(authority.substr(port_separator + 1)), 1, 65535);
+    } catch (const std::exception&) {
+      return std::nullopt;
+    }
+  }
+
+  if (proxy.host.empty()) {
+    return std::nullopt;
+  }
+
+  if (!proxy.username.empty() || !proxy.password.empty()) {
+    if (proxy.type == lt::settings_pack::socks5) {
+      proxy.type = lt::settings_pack::socks5_pw;
+    } else if (proxy.type == lt::settings_pack::http) {
+      proxy.type = lt::settings_pack::http_pw;
+    }
+  }
+
+  return proxy;
+}
+
+void apply_runtime_settings(lt::settings_pack& settings, const TorrentRuntimeSettings& runtime) {
+  settings.set_int(lt::settings_pack::connections_limit,
+                   std::clamp(runtime.max_connections, 1, 100000));
+  settings.set_int(lt::settings_pack::upload_rate_limit,
+                   std::clamp(runtime.upload_speed_kib, 0, 1024 * 1024) * 1024);
+  settings.set_bool(lt::settings_pack::proxy_peer_connections, runtime.proxy_peer_connections);
+  settings.set_bool(lt::settings_pack::proxy_tracker_connections,
+                    runtime.proxy_tracker_connections);
+  settings.set_bool(lt::settings_pack::proxy_hostnames, runtime.proxy_dns);
+
+  const std::optional<ParsedProxyUrl> proxy = parse_proxy_url(runtime.proxy_url);
+  if (!proxy.has_value()) {
+    TORRVIEW_LOG_WARNING("Ignoring invalid proxy URL: " << runtime.proxy_url);
+    settings.set_int(lt::settings_pack::proxy_type, lt::settings_pack::none);
+    return;
+  }
+
+  settings.set_int(lt::settings_pack::proxy_type, proxy->type);
+  settings.set_str(lt::settings_pack::proxy_hostname, proxy->host);
+  settings.set_int(lt::settings_pack::proxy_port, proxy->port);
+  settings.set_str(lt::settings_pack::proxy_username, proxy->username);
+  settings.set_str(lt::settings_pack::proxy_password, proxy->password);
+}
+
+lt::settings_pack make_session_settings(const TorrentRuntimeSettings& runtime) {
   lt::settings_pack settings;
   const char* listen_env = std::getenv("TORRVIEW_LISTEN_INTERFACES");
   const std::string listen_interfaces =
@@ -182,9 +272,7 @@ lt::settings_pack make_session_settings() {
   settings.set_bool(lt::settings_pack::enable_lsd, true);
   settings.set_bool(lt::settings_pack::enable_upnp, true);
   settings.set_bool(lt::settings_pack::enable_natpmp, true);
-  settings.set_int(lt::settings_pack::connections_limit, 200);
-  settings.set_int(lt::settings_pack::upload_rate_limit,
-                   env_int_or_default("TORRVIEW_UPLOAD_RATE_LIMIT", 1024 * 1024));
+  apply_runtime_settings(settings, runtime);
   settings.set_int(lt::settings_pack::alert_mask,
                    lt::alert_category::error | lt::alert_category::status |
                        lt::alert_category::tracker | lt::alert_category::dht |
@@ -194,8 +282,8 @@ lt::settings_pack make_session_settings() {
   return settings;
 }
 
-lt::session_params make_session_params() {
-  lt::session_params params(make_session_settings());
+lt::session_params make_session_params(const TorrentRuntimeSettings& runtime) {
+  lt::session_params params(make_session_settings(runtime));
   params.disk_io_constructor = create_memory_disk_io;
   return params;
 }
@@ -306,12 +394,12 @@ std::vector<TorrentFileInfo> filter_video_files(const std::vector<TorrentFileInf
   return video_files;
 }
 
-void configure_metadata_only_add(lt::add_torrent_params& params) {
+void configure_metadata_only_add(lt::add_torrent_params& params, int max_connections) {
   params.save_path = metadata_cache_path();
   params.flags &= ~lt::torrent_flags::auto_managed;
   params.flags &= ~lt::torrent_flags::paused;
   params.flags |= lt::torrent_flags::default_dont_download;
-  params.max_connections = 80;
+  params.max_connections = std::clamp(max_connections, 1, 100000);
 
   if (params.ti != nullptr) {
     params.file_priorities.assign(static_cast<std::size_t>(params.ti->num_files()),
@@ -1225,7 +1313,7 @@ private:
 
 class TorrentService::Impl final {
 public:
-  Impl() : session_(make_session_params()) {
+  Impl() : session_(make_session_params(runtime_settings_)) {
     snapshot_.available = true;
     snapshot_.state = TorrentLoadState::idle;
     snapshot_.status = "Ready";
@@ -1258,7 +1346,7 @@ public:
 
     lt::add_torrent_params params;
     params.ti = std::move(info);
-    configure_metadata_only_add(params);
+    configure_metadata_only_add(params, runtime_settings_.max_connections);
     session_.async_add_torrent(std::move(params));
   }
 
@@ -1275,7 +1363,7 @@ public:
       return;
     }
 
-    configure_metadata_only_add(params);
+    configure_metadata_only_add(params, runtime_settings_.max_connections);
     session_.async_add_torrent(std::move(params));
   }
 
@@ -1386,6 +1474,18 @@ public:
     if (active_scheduler_ != nullptr) {
       active_scheduler_->set_policy(cache_policy_);
     }
+  }
+
+  void set_runtime_settings(const TorrentRuntimeSettings& settings) {
+    runtime_settings_ = settings;
+    lt::settings_pack pack;
+    apply_runtime_settings(pack, runtime_settings_);
+    session_.apply_settings(std::move(pack));
+    TORRVIEW_LOG_INFO("torrent runtime settings applied upload_kib="
+                      << std::clamp(runtime_settings_.upload_speed_kib, 0, 1024 * 1024)
+                      << " max_connections="
+                      << std::clamp(runtime_settings_.max_connections, 1, 100000)
+                      << " proxy=" << (trim(runtime_settings_.proxy_url).empty() ? "none" : "set"));
   }
 
   const TorrentSnapshot& snapshot() const { return snapshot_; }
@@ -1764,6 +1864,7 @@ private:
     return {};
   }
 
+  TorrentRuntimeSettings runtime_settings_;
   lt::session session_;
   lt::torrent_handle handle_;
   TorrentSnapshot snapshot_;
@@ -1804,6 +1905,8 @@ public:
   void set_cache_limit_mib(int limit_mib) {
     snapshot_.cache_limit_mib = CachePolicy::from_limit_mib(limit_mib).limit_mib();
   }
+
+  void set_runtime_settings(const TorrentRuntimeSettings&) {}
 
   void reset() {
     snapshot_ = {};
@@ -1849,6 +1952,10 @@ void TorrentService::process_alerts() { impl_->process_alerts(); }
 void TorrentService::reset() { impl_->reset(); }
 
 void TorrentService::set_cache_limit_mib(int limit_mib) { impl_->set_cache_limit_mib(limit_mib); }
+
+void TorrentService::set_runtime_settings(const TorrentRuntimeSettings& settings) {
+  impl_->set_runtime_settings(settings);
+}
 
 const TorrentSnapshot& TorrentService::snapshot() const { return impl_->snapshot(); }
 

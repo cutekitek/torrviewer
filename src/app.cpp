@@ -129,6 +129,10 @@ void Application::initialize() {
     throw std::runtime_error(sdl_error("SDL_Init failed"));
   }
   sdl_initialized_ = true;
+  const char* base_path = SDL_GetBasePath();
+  settings_path_ = settings_path_for_executable_dir(base_path);
+  settings_ = load_app_settings(settings_path_);
+  cache_limit_mib_ = settings_.buffer_size_mib;
 
   set_gl_attribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
   set_gl_attribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -166,7 +170,7 @@ void Application::initialize() {
   initialize_clay();
   player_ = std::make_unique<MpvPlayer>();
   player_->set_torrent_stream_provider(&torrent_service_);
-  torrent_service_.set_cache_limit_mib(cache_limit_mib_);
+  apply_settings();
   if (player_->available()) {
     player_->initialize();
   }
@@ -205,6 +209,58 @@ void Application::key_down(const SDL_KeyboardEvent& key) {
   }
 
   const bool command = (key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
+
+  if (settings_open_) {
+    if (command && key.key == SDLK_V && settings_page_.has_focus()) {
+      char* clipboard = SDL_GetClipboardText();
+      if (clipboard != nullptr) {
+        settings_page_.append_text(clipboard);
+        SDL_free(clipboard);
+      }
+      return;
+    }
+    if (key.key == SDLK_ESCAPE) {
+      settings_open_ = false;
+      return;
+    }
+    if (key.key == SDLK_BACKSPACE) {
+      settings_page_.backspace();
+      return;
+    }
+    if (key.key == SDLK_TAB) {
+      settings_page_.focus_next();
+      return;
+    }
+    if (key.key == SDLK_RETURN || key.key == SDLK_KP_ENTER) {
+      save_settings_page();
+      return;
+    }
+    return;
+  }
+
+  if (player_overlay_.cache_size_input_focused()) {
+    if (command && key.key == SDLK_V) {
+      char* clipboard = SDL_GetClipboardText();
+      if (clipboard != nullptr) {
+        player_overlay_.append_cache_size_text(clipboard);
+        SDL_free(clipboard);
+      }
+      return;
+    }
+    if (key.key == SDLK_BACKSPACE) {
+      player_overlay_.backspace_cache_size_text();
+      return;
+    }
+    if (key.key == SDLK_RETURN || key.key == SDLK_KP_ENTER) {
+      player_overlay_.commit_cache_size_text();
+      handle_player_action(ui::PlayerOverlayAction::set_cache_size);
+      return;
+    }
+    if (key.key == SDLK_ESCAPE) {
+      player_overlay_.close_menus();
+      return;
+    }
+  }
 
   if (key.key == SDLK_ESCAPE) {
     if (is_fullscreen()) {
@@ -267,6 +323,21 @@ void Application::key_down(const SDL_KeyboardEvent& key) {
   }
 }
 
+void Application::text_input(const SDL_TextInputEvent& text) {
+  if (text.text == nullptr) {
+    return;
+  }
+
+  if (settings_open_) {
+    settings_page_.append_text(text.text);
+    return;
+  }
+
+  if (player_overlay_.cache_size_input_focused()) {
+    player_overlay_.append_cache_size_text(text.text);
+  }
+}
+
 void Application::mouse_motion(const SDL_MouseMotionEvent& motion) {
   pointer_.x = motion.x;
   pointer_.y = motion.y;
@@ -312,6 +383,11 @@ void Application::mouse_button(const SDL_MouseButtonEvent& button) {
   }
 
   Clay_SetCurrentContext(clay_context_);
+  if (settings_open_) {
+    handle_settings_click();
+    return;
+  }
+
   if (player_ != nullptr && player_->has_file()) {
     handle_player_click();
     return;
@@ -322,7 +398,9 @@ void Application::mouse_button(const SDL_MouseButtonEvent& button) {
     return;
   }
 
-  if (Clay_PointerOver(title_page_.source_panel_id())) {
+  if (Clay_PointerOver(title_page_.settings_button_id())) {
+    open_settings();
+  } else if (Clay_PointerOver(title_page_.source_panel_id())) {
     show_open_source_dialog();
   }
 }
@@ -412,10 +490,12 @@ void Application::initialize_clay() {
   }
 
   text_measure_state_.font_name = font_name_;
+  text_measure_state_.text.reset(tvg::Text::gen());
   Clay_SetMeasureTextFunction(ui::measure_text, &text_measure_state_);
   title_page_.initialize_ids();
   file_browser_page_.initialize_ids();
   player_overlay_.initialize_ids();
+  settings_page_.initialize_ids();
   last_frame_time_ = Clock::now();
   player_controls_last_hover_ = last_frame_time_;
 }
@@ -423,6 +503,44 @@ void Application::initialize_clay() {
 void Application::show_open_source_dialog() {
   SDL_ShowOpenFileDialog(open_file_dialog_callback, nullptr, window_, source_filters, 4, nullptr,
                          false);
+}
+
+void Application::open_settings() {
+  settings_open_ = true;
+  settings_page_.open(settings_);
+  settings_page_.set_font_size(settings_.font_size);
+  player_overlay_.close_menus();
+}
+
+void Application::save_settings_page() {
+  settings_page_.write_settings(settings_);
+  settings_ = clamp_settings(settings_);
+  settings_.buffer_size_mib = cache_limit_mib_;
+  save_app_settings(settings_path_, settings_);
+  apply_settings();
+  settings_open_ = false;
+}
+
+TorrentRuntimeSettings Application::runtime_settings_from_app_settings() const {
+  TorrentRuntimeSettings runtime;
+  runtime.upload_speed_kib = settings_.upload_speed_kib;
+  runtime.max_connections = settings_.max_connections;
+  runtime.proxy_url = settings_.proxy_url;
+  runtime.proxy_peer_connections = settings_.proxy_peer_connections;
+  runtime.proxy_tracker_connections = settings_.proxy_tracker_connections;
+  runtime.proxy_dns = settings_.proxy_dns;
+  return runtime;
+}
+
+void Application::apply_settings() {
+  settings_ = clamp_settings(settings_);
+  cache_limit_mib_ = settings_.buffer_size_mib;
+  title_page_.set_font_size(settings_.font_size);
+  file_browser_page_.set_font_size(settings_.font_size);
+  player_overlay_.set_font_size(settings_.font_size);
+  settings_page_.set_font_size(settings_.font_size);
+  torrent_service_.set_cache_limit_mib(cache_limit_mib_);
+  torrent_service_.set_runtime_settings(runtime_settings_from_app_settings());
 }
 
 void Application::paste_clipboard() {
@@ -509,6 +627,9 @@ void Application::handle_file_browser_click() {
   case ui::FileBrowserAction::open_source:
     show_open_source_dialog();
     break;
+  case ui::FileBrowserAction::open_settings:
+    open_settings();
+    break;
   case ui::FileBrowserAction::select_file:
     selected_torrent_file_index_ = file_browser_page_.selected_file_index();
     TORRVIEW_LOG_INFO("Selected torrent file index " << *selected_torrent_file_index_);
@@ -531,6 +652,19 @@ void Application::handle_file_browser_click() {
     update_window_title();
     break;
   case ui::FileBrowserAction::none:
+    break;
+  }
+}
+
+void Application::handle_settings_click() {
+  switch (settings_page_.hit_test_click()) {
+  case ui::SettingsPageAction::save:
+    save_settings_page();
+    break;
+  case ui::SettingsPageAction::close:
+    settings_open_ = false;
+    break;
+  case ui::SettingsPageAction::none:
     break;
   }
 }
@@ -568,11 +702,15 @@ void Application::handle_player_action(ui::PlayerOverlayAction action) {
     break;
   case ui::PlayerOverlayAction::toggle_buffer_menu:
     break;
+  case ui::PlayerOverlayAction::focus_cache_size:
+    break;
   case ui::PlayerOverlayAction::select_audio_track:
     player_->select_audio_track(player_overlay_.selected_audio_track_index());
     break;
   case ui::PlayerOverlayAction::set_cache_size:
     cache_limit_mib_ = player_overlay_.selected_cache_size_mib();
+    settings_.buffer_size_mib = cache_limit_mib_;
+    save_app_settings(settings_path_, settings_);
     torrent_service_.set_cache_limit_mib(cache_limit_mib_);
     TORRVIEW_LOG_INFO("Cache limit set to " << cache_limit_mib_ << " MiB");
     break;
@@ -718,7 +856,9 @@ void Application::render() {
   pointer_.wheel_x = 0.0F;
   pointer_.wheel_y = 0.0F;
 
-  if (player_ != nullptr && player_->has_file()) {
+  if (settings_open_) {
+    render_settings_screen(delta_time);
+  } else if (player_ != nullptr && player_->has_file()) {
     render_player_screen(delta_time);
   } else if (torrent_service_.snapshot().state != TorrentLoadState::idle) {
     render_file_browser_screen(delta_time);
@@ -730,6 +870,14 @@ void Application::render() {
   if (player_ != nullptr && player_->has_file()) {
     player_->report_swap();
   }
+}
+
+void Application::render_settings_screen(float delta_time) {
+  settings_page_.begin_frame();
+  Clay_BeginLayout();
+  settings_page_.build(metrics_);
+  Clay_RenderCommandArray commands = Clay_EndLayout(delta_time);
+  clay_renderer_->render(commands);
 }
 
 void Application::render_title_screen(float delta_time) {

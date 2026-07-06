@@ -17,6 +17,7 @@ namespace torrview::ui {
 enum class FileBrowserAction {
   none,
   open_source,
+  open_settings,
   select_file,
 };
 
@@ -28,15 +29,22 @@ public:
              std::optional<int> selected_file_index);
   FileBrowserAction hit_test_click();
   int selected_file_index() const;
+  void set_font_size(int font_size);
 
 private:
   std::string_view retain_frame_text(std::string value);
   void text(std::string_view value, uint16_t font_size, Clay_Color color,
             Clay_TextElementConfigWrapMode wrap = CLAY_TEXT_WRAP_NONE);
-  void file_row(Clay_ElementId id, const TorrentFileInfo& file, bool selected);
+  void icon(std::string_view path, float size);
+  void file_row(Clay_ElementId id, const TorrentFileInfo& file, bool selected,
+                std::size_t max_path_length);
+  [[nodiscard]] uint16_t scaled_font_size(uint16_t font_size) const;
+  [[nodiscard]] float line_height(uint16_t font_size) const;
 
   Clay_ElementId open_source_id_ = {};
+  Clay_ElementId settings_id_ = {};
   Clay_ElementId file_list_id_ = {};
+  int font_size_ = 13;
   std::vector<Clay_ElementId> row_ids_;
   std::vector<int> row_file_indices_;
   int selected_file_index_ = -1;

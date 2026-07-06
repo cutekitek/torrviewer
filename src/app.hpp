@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gl_api.hpp"
+#include "app_settings.hpp"
 #include "input_source.hpp"
 #include "mpv_player.hpp"
 #include "sdl_event_manager.hpp"
@@ -8,6 +9,7 @@
 #include "ui/clay_renderer.hpp"
 #include "ui/file_browser_page.hpp"
 #include "ui/player_overlay.hpp"
+#include "ui/settings_page.hpp"
 #include "ui/title_page.hpp"
 #include "window_state.hpp"
 
@@ -16,6 +18,7 @@
 #include <SDL3/SDL.h>
 
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -40,6 +43,7 @@ private:
   void request_quit() override;
   void window_metrics_changed() override;
   void key_down(const SDL_KeyboardEvent& key) override;
+  void text_input(const SDL_TextInputEvent& text) override;
   void mouse_motion(const SDL_MouseMotionEvent& motion) override;
   void mouse_button(const SDL_MouseButtonEvent& button) override;
   void mouse_wheel(const SDL_MouseWheelEvent& wheel) override;
@@ -56,10 +60,15 @@ private:
   void destroy_text_renderer();
   void initialize_clay();
   void show_open_source_dialog();
+  void open_settings();
+  void save_settings_page();
+  void apply_settings();
+  TorrentRuntimeSettings runtime_settings_from_app_settings() const;
   void paste_clipboard();
   void consume_dialog_results();
   void accept_input(ParsedInput input);
   void handle_file_browser_click();
+  void handle_settings_click();
   void handle_player_click();
   void handle_player_action(ui::PlayerOverlayAction action);
   void update_volume_from_pointer();
@@ -71,6 +80,7 @@ private:
   void update_window_title();
   void render();
   void render_file_browser_screen(float delta_time);
+  void render_settings_screen(float delta_time);
   void render_title_screen(float delta_time);
   void render_player_screen(float delta_time);
   void log_startup() const;
@@ -81,6 +91,7 @@ private:
   bool dragging_volume_ = false;
   bool player_controls_visible_ = true;
   bool thorvg_initialized_ = false;
+  bool settings_open_ = false;
   int cache_limit_mib_ = 256;
   SDL_Window* window_ = nullptr;
   SDL_GLContext context_ = nullptr;
@@ -99,8 +110,11 @@ private:
   ui::TitlePage title_page_;
   ui::FileBrowserPage file_browser_page_;
   ui::PlayerOverlay player_overlay_;
+  ui::SettingsPage settings_page_;
   SdlEventManager event_manager_;
   std::vector<char> clay_memory_;
+  AppSettings settings_;
+  std::filesystem::path settings_path_;
   std::optional<ParsedInput> last_input_;
   std::optional<int> selected_torrent_file_index_;
 };

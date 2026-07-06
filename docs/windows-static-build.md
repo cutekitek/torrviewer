@@ -14,7 +14,9 @@ Or from an MSYS2 UCRT64 shell:
 ./scripts/build-windows-static-msys2.sh
 ```
 
-The FFmpeg build is intentionally decode-only and uses FFmpeg's `--enable-small` option by default. It keeps the libraries mpv requires (`avcodec`, `avformat`, `avfilter`, `avutil`, `swresample`, `swscale`) and enables common media demuxers/decoders for MKV, MP4/MOV, WebM, AVI, MPEG-TS/PS, FLV, Ogg, MP3, AAC, FLAC, H.264, HEVC, MPEG video, VP8/VP9, AV1, common Windows Media codecs, and common audio codecs. It disables FFmpeg programs, devices, network protocols, encoders, muxers, and documentation.
+The FFmpeg build is intentionally decode-only and uses FFmpeg's `--enable-small` option by default. It keeps the libraries mpv requires (`avcodec`, `avformat`, `avfilter`, `avutil`, `swresample`, `swscale`) and enables common media demuxers/decoders for MKV, MP4/MOV, WebM, AVI, MPEG-TS/PS, FLV, Ogg, MP3, AAC, FLAC, H.264, HEVC, MPEG video, VP8/VP9, AV1, common Windows Media codecs, and common audio codecs. It also enables Windows D3D11VA/DXVA2 hardware decode paths for common GPU-decodable video formats. It disables FFmpeg programs, devices, network protocols, encoders, muxers, and documentation.
+
+The bundled libplacebo build enables its OpenGL backend for GPU rendering support while keeping Vulkan and D3D11 disabled to avoid extra shader compiler and loader dependencies in the static package. The embedded libmpv build enables Windows D3D hardware decoding, and the app requests mpv's `hwdec=auto-safe` mode at runtime on Windows.
 
 Override the FFmpeg revision with:
 
@@ -33,10 +35,4 @@ $env:ENABLE_UPX = "0"
 
 The script prints imported DLLs for `torrview.exe` after the build. A fully static MinGW build should only list Windows system DLLs such as `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `OPENGL32.dll`, and similar OS libraries.
 
-`torrview.exe` is built as a Windows GUI application, so launching the production executable does not open a separate command window. For development or testing with console logging, build the opt-in debug target after configuring:
-
-```sh
-meson compile -C build-windows-static torrview-debug
-```
-
-That produces `build-windows-static/src/torrview-debug.exe`, which keeps the Windows console subsystem.
+`torrview.exe` is built as a Windows GUI application, so launching the production executable does not open a separate command window. Use the separate Windows development build for a fast console target.

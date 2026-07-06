@@ -81,7 +81,7 @@ build_ffmpeg() {
     ffmpeg_profile="small"
     small_flags+=(--enable-small)
   fi
-  local stamp="${prefix}/.ffmpeg-${ffmpeg_ref}-${ffmpeg_profile}.stamp"
+  local stamp="${prefix}/.ffmpeg-${ffmpeg_ref}-${ffmpeg_profile}-d3d-hwaccel.stamp"
 
   if [[ -f "${stamp}" && -f "${prefix}/lib/pkgconfig/libavcodec.pc" ]]; then
     echo "Using existing FFmpeg build for ${ffmpeg_ref} (${ffmpeg_profile})"
@@ -122,10 +122,13 @@ build_ffmpeg() {
     --enable-swresample \
     --enable-swscale \
     --enable-zlib \
+    --enable-d3d11va \
+    --enable-dxva2 \
     --enable-protocol=file,pipe \
     --enable-demuxer=matroska,mov,avi,mpegts,mpeg,mpegvideo,flv,ogg,wav,mp3,aac,flac \
     --enable-parser=aac,aac_latm,ac3,av1,h264,hevc,mpeg4video,mpegaudio,mpegvideo,opus,vorbis,vp8,vp9 \
     --enable-decoder=aac,aac_latm,ac3,eac3,alac,flac,mp1,mp2,mp3,opus,vorbis,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,h264,hevc,mpeg1video,mpeg2video,mpeg4,msmpeg4v2,msmpeg4v3,h263,vc1,wmv1,wmv2,wmv3,vp8,vp9,av1,theora \
+    --enable-hwaccel=av1_d3d11va,av1_d3d11va2,av1_dxva2,h264_d3d11va,h264_d3d11va2,h264_dxva2,hevc_d3d11va,hevc_d3d11va2,hevc_dxva2,mpeg2_d3d11va,mpeg2_d3d11va2,mpeg2_dxva2,vc1_d3d11va,vc1_d3d11va2,vc1_dxva2,vp9_d3d11va,vp9_d3d11va2,vp9_dxva2,wmv3_d3d11va,wmv3_d3d11va2,wmv3_dxva2 \
     --enable-filter=abuffer,abuffersink,aformat,anull,aresample,buffer,buffersink,format,null,scale
 
   make -j"$(nproc)"
@@ -147,7 +150,7 @@ sanitize_libplacebo_pc() {
 
 build_libplacebo() {
   mkdir -p "${deps_root}" "${prefix}"
-  local stamp="${prefix}/.libplacebo-${libplacebo_ref}.stamp"
+  local stamp="${prefix}/.libplacebo-${libplacebo_ref}-opengl.stamp"
 
   if [[ -f "${stamp}" && -f "${prefix}/lib/pkgconfig/libplacebo.pc" ]]; then
     echo "Using existing libplacebo build for ${libplacebo_ref}"
@@ -168,6 +171,7 @@ build_libplacebo() {
       "refs/tags/${libplacebo_ref}:refs/tags/${libplacebo_ref}"
     git -C "${libplacebo_src}" checkout --detach "${libplacebo_ref}^{commit}"
   fi
+  git -C "${libplacebo_src}" submodule update --init --depth 1 3rdparty/glad
 
   meson setup "${libplacebo_build}" "${libplacebo_src}" \
     --wipe \
@@ -178,8 +182,8 @@ build_libplacebo() {
     --prefer-static \
     -Dvulkan=disabled \
     -Dvk-proc-addr=disabled \
-    -Dopengl=disabled \
-    -Dgl-proc-addr=disabled \
+    -Dopengl=enabled \
+    -Dgl-proc-addr=enabled \
     -Dd3d11=disabled \
     -Dglslang=disabled \
     -Dshaderc=disabled \

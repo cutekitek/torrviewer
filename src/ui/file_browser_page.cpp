@@ -48,6 +48,19 @@ std::string format_bytes(std::int64_t bytes) {
   return out.str();
 }
 
+std::string compact_left(std::string_view value, std::size_t max_length) {
+  if (value.size() <= max_length) {
+    return std::string(value);
+  }
+  if (max_length <= 5) {
+    return std::string(value.substr(value.size() - max_length));
+  }
+
+  std::string result("...");
+  result += value.substr(value.size() - (max_length - 3));
+  return result;
+}
+
 std::string compact_middle(std::string_view value, std::size_t max_length) {
   if (value.size() <= max_length) {
     return std::string(value);
@@ -64,11 +77,11 @@ std::string compact_middle(std::string_view value, std::size_t max_length) {
   return result;
 }
 
-std::string source_label(const TorrentSnapshot& snapshot) {
+std::string source_label(const TorrentSnapshot& snapshot, std::size_t max_length) {
   if (snapshot.source.empty()) {
     return "No source";
   }
-  return compact_middle(snapshot.source, 86);
+  return compact_middle(snapshot.source, max_length);
 }
 
 std::string status_label(const TorrentSnapshot& snapshot) {
@@ -85,6 +98,7 @@ std::string status_label(const TorrentSnapshot& snapshot) {
 
 void FileBrowserPage::initialize_ids() {
   open_source_id_ = Clay_GetElementId(CLAY_STRING("FileBrowserOpenSource"));
+  settings_id_ = Clay_GetElementId(CLAY_STRING("FileBrowserSettings"));
   file_list_id_ = Clay_GetElementId(CLAY_STRING("FileBrowserFileList"));
 }
 
@@ -101,26 +115,46 @@ std::string_view FileBrowserPage::retain_frame_text(std::string value) {
 
 void FileBrowserPage::text(std::string_view value, uint16_t font_size, Clay_Color color,
                            Clay_TextElementConfigWrapMode wrap) {
+  const uint16_t scaled_size = scaled_font_size(font_size);
   CLAY_TEXT(clay_string(value), CLAY_TEXT_CONFIG({.textColor = color,
-                                                  .fontSize = font_size,
+                                                  .fontSize = scaled_size,
                                                   .lineHeight = static_cast<uint16_t>(std::lround(
-                                                      static_cast<float>(font_size) * 1.25F)),
+                                                      static_cast<float>(scaled_size) * 1.25F)),
                                                   .wrapMode = wrap}));
 }
 
-void FileBrowserPage::file_row(Clay_ElementId id, const TorrentFileInfo& file, bool selected) {
+void FileBrowserPage::icon(std::string_view path, float size) {
+  CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(size),
+                                      .height = CLAY_SIZING_FIXED(size)}},
+                .image = {.imageData = const_cast<char*>(path.data())}}) {}
+}
+
+uint16_t FileBrowserPage::scaled_font_size(uint16_t font_size) const {
+  const float scale = static_cast<float>(std::clamp(font_size_, 9, 24)) / 13.0F;
+  return static_cast<uint16_t>(std::clamp<int>(static_cast<int>(std::lround(font_size * scale)), 8,
+                                               32));
+}
+
+float FileBrowserPage::line_height(uint16_t font_size) const {
+  return static_cast<float>(scaled_font_size(font_size)) * 1.25F;
+}
+
+void FileBrowserPage::file_row(Clay_ElementId id, const TorrentFileInfo& file, bool selected,
+                               std::size_t max_path_length) {
   const Clay_Color background = selected ? color_row_selected : color_row;
-  const std::string path = compact_middle(file.path, 78);
+  const std::string path = compact_left(file.path, max_path_length);
   const std::string details =
       format_bytes(file.size) + "  " + (file.extension.empty() ? "file" : file.extension);
 
   CLAY(id,
-       {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F), .height = CLAY_SIZING_FIXED(58.0F)},
+       {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
+                              .height = CLAY_SIZING_FIT(0.0F)},
                    .padding = {14, 14, 8, 8},
                    .childGap = 4,
                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
         .backgroundColor = background,
-        .cornerRadius = CLAY_CORNER_RADIUS(6.0F)}) {
+        .cornerRadius = CLAY_CORNER_RADIUS(6.0F),
+        .clip = {.horizontal = true, .vertical = true}}) {
     text(retain_frame_text(path), 13, color_text, CLAY_TEXT_WRAP_NONE);
     text(retain_frame_text(details), 11, selected ? color_text : color_muted, CLAY_TEXT_WRAP_NONE);
   }
@@ -130,11 +164,19 @@ void FileBrowserPage::build(const WindowMetrics& metrics, const TorrentSnapshot&
                             std::optional<int> selected_file_index) {
   const float width = static_cast<float>(metrics.logical_width);
   const float height = static_cast<float>(metrics.logical_height);
-  const float content_width = std::clamp(width - 64.0F, 520.0F, 980.0F);
-  const float list_height = std::max(180.0F, height - 270.0F);
+  const float content_width = std::max(320.0F, width);
+  const bool loading = snapshot.state == TorrentLoadState::loading_metadata;
+  const float header_estimate =
+      line_height(17) + line_height(12) * 2.0F + (loading ? 12.0F : 0.0F) + 54.0F;
+  const float list_height = std::max(180.0F, height - header_estimate);
+  const float path_char_width = std::max(5.0F, static_cast<float>(scaled_font_size(13)) * 0.56F);
+  const float source_char_width = std::max(5.0F, static_cast<float>(scaled_font_size(12)) * 0.56F);
+  const std::size_t max_file_path_length =
+      static_cast<std::size_t>(std::max(24.0F, (content_width - 76.0F) / path_char_width));
+  const std::size_t max_source_length =
+      static_cast<std::size_t>(std::max(24.0F, (content_width - 36.0F) / source_char_width));
   const std::vector<TorrentFileInfo>& files =
       snapshot.video_files.empty() ? snapshot.files : snapshot.video_files;
-  const bool loading = snapshot.state == TorrentLoadState::loading_metadata;
   const bool error =
       snapshot.state == TorrentLoadState::error || snapshot.state == TorrentLoadState::unavailable;
   const float progress = std::clamp(snapshot.metadata_progress, 0.0F, 1.0F);
@@ -146,22 +188,23 @@ void FileBrowserPage::build(const WindowMetrics& metrics, const TorrentSnapshot&
 
   CLAY(CLAY_ID("FileBrowserRoot"),
        {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F), .height = CLAY_SIZING_GROW(0.0F)},
-                   .padding = {32, 32, 28, 28},
-                   .childGap = 18,
+                   .padding = {0, 0, 0, 0},
+                   .childGap = 0,
                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_TOP},
                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
         .backgroundColor = color_background}) {
     CLAY(CLAY_ID("FileBrowserHeader"),
          {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(content_width),
-                                .height = CLAY_SIZING_FIXED(112.0F)},
+                                .height = CLAY_SIZING_FIT(0.0F)},
                      .padding = {18, 18, 14, 14},
                      .childGap = 8,
                      .layoutDirection = CLAY_TOP_TO_BOTTOM},
           .backgroundColor = color_panel,
-          .cornerRadius = CLAY_CORNER_RADIUS(8.0F)}) {
+          .cornerRadius = CLAY_CORNER_RADIUS(0.0F),
+          .clip = {.horizontal = true, .vertical = true}}) {
       CLAY(CLAY_ID("FileBrowserTopRow"),
            {.layout = {
-                .sizing = {.width = CLAY_SIZING_GROW(0.0F), .height = CLAY_SIZING_FIXED(32.0F)},
+                .sizing = {.width = CLAY_SIZING_GROW(0.0F), .height = CLAY_SIZING_FIT(0.0F)},
                 .childGap = 12,
                 .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
         text(retain_frame_text(compact_middle(title, 64)), 17, color_text, CLAY_TEXT_WRAP_NONE);
@@ -169,18 +212,28 @@ void FileBrowserPage::build(const WindowMetrics& metrics, const TorrentSnapshot&
              {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
                                     .height = CLAY_SIZING_FIXED(1.0F)}}}) {}
         CLAY(open_source_id_,
-             {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(148.0F),
-                                    .height = CLAY_SIZING_FIXED(32.0F)},
+             {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
+                                    .height = CLAY_SIZING_FIT(0.0F)},
+                         .padding = {12, 12, 6, 6},
                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
               .backgroundColor = color_row,
               .cornerRadius = CLAY_CORNER_RADIUS(6.0F)}) {
           text("Open source", 12, color_text, CLAY_TEXT_WRAP_NONE);
         }
+        CLAY(settings_id_,
+             {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(32.0F),
+                                    .height = CLAY_SIZING_FIXED(32.0F)},
+                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+              .backgroundColor = color_row,
+              .cornerRadius = CLAY_CORNER_RADIUS(6.0F)}) {
+          icon("icons/gear.svg", 18.0F);
+        }
       }
-      text(retain_frame_text(source_label(snapshot)), 12, color_muted, CLAY_TEXT_WRAP_NONE);
+      text(retain_frame_text(source_label(snapshot, max_source_length)), 12, color_muted,
+           CLAY_TEXT_WRAP_NONE);
       CLAY(CLAY_ID("FileBrowserStatusRow"),
            {.layout = {
-                .sizing = {.width = CLAY_SIZING_GROW(0.0F), .height = CLAY_SIZING_FIXED(22.0F)},
+                .sizing = {.width = CLAY_SIZING_GROW(0.0F), .height = CLAY_SIZING_FIT(0.0F)},
                 .childGap = 14,
                 .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
         text(retain_frame_text(status_label(snapshot)), 12, error ? color_error : color_accent,
@@ -214,7 +267,7 @@ void FileBrowserPage::build(const WindowMetrics& metrics, const TorrentSnapshot&
       if (files.empty()) {
         CLAY(CLAY_ID("FileBrowserEmpty"),
              {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                    .height = CLAY_SIZING_FIXED(72.0F)},
+                                    .height = CLAY_SIZING_FIT(0.0F)},
                          .padding = {14, 14, 0, 0},
                          .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}},
               .backgroundColor = color_row,
@@ -230,7 +283,8 @@ void FileBrowserPage::build(const WindowMetrics& metrics, const TorrentSnapshot&
           row_ids_.push_back(row_id);
           row_file_indices_.push_back(files[index].index);
           file_row(row_id, files[index],
-                   selected_file_index.has_value() && *selected_file_index == files[index].index);
+                   selected_file_index.has_value() && *selected_file_index == files[index].index,
+                   max_file_path_length);
         }
       }
     }
@@ -240,6 +294,10 @@ void FileBrowserPage::build(const WindowMetrics& metrics, const TorrentSnapshot&
 FileBrowserAction FileBrowserPage::hit_test_click() {
   if (Clay_PointerOver(open_source_id_)) {
     return FileBrowserAction::open_source;
+  }
+
+  if (Clay_PointerOver(settings_id_)) {
+    return FileBrowserAction::open_settings;
   }
 
   for (std::size_t index = 0; index < row_ids_.size(); ++index) {
@@ -253,5 +311,7 @@ FileBrowserAction FileBrowserPage::hit_test_click() {
 }
 
 int FileBrowserPage::selected_file_index() const { return selected_file_index_; }
+
+void FileBrowserPage::set_font_size(int font_size) { font_size_ = std::clamp(font_size, 9, 24); }
 
 } // namespace torrview::ui

@@ -25,36 +25,44 @@ uint8_t clay_alpha(Clay_Color color) { return clay_channel(color, &Clay_Color::a
 
 bool ok(tvg::Result result) { return result == tvg::Result::Success; }
 
-std::size_t utf8_codepoint_length(unsigned char leading) {
+const char* next_utf8(const char* cursor, const char* end) {
+  if (cursor >= end || *cursor == '\0') {
+    return end;
+  }
+  const unsigned char leading = static_cast<unsigned char>(*cursor);
+  std::size_t length = 1;
   if ((leading & 0x80U) == 0U) {
-    return 1;
+    length = 1;
+  } else if ((leading >> 5U) == 0x6U) {
+    length = 2;
+  } else if ((leading >> 4U) == 0xEU) {
+    length = 3;
+  } else if ((leading >> 3U) == 0x1EU) {
+    length = 4;
   }
-  if ((leading & 0xE0U) == 0xC0U) {
-    return 2;
-  }
-  if ((leading & 0xF0U) == 0xE0U) {
-    return 3;
-  }
-  if ((leading & 0xF8U) == 0xF0U) {
-    return 4;
-  }
-  return 1;
+  return cursor + std::min<std::size_t>(length, static_cast<std::size_t>(end - cursor));
 }
 
 } // namespace
 
 Clay_Dimensions measure_text(Clay_StringSlice text, Clay_TextElementConfig* config,
                              void* user_data) {
-  const auto* state = static_cast<TextMeasureState*>(user_data);
+  auto* state = static_cast<TextMeasureState*>(user_data);
   if (state == nullptr || state->font_name == nullptr || config == nullptr || text.length <= 0 ||
       text.chars == nullptr) {
     return {0.0F, 0.0F};
   }
 
-  std::unique_ptr<tvg::Text, decltype(&tvg::Paint::rel)> measure(tvg::Text::gen(),
-                                                                 &tvg::Paint::rel);
-  if (!measure || !ok(measure->font(state->font_name)) ||
-      !ok(measure->size(static_cast<float>(std::max<uint16_t>(config->fontSize, 1))))) {
+  if (!state->text) {
+    state->text.reset(tvg::Text::gen());
+  }
+
+  auto* measure = state->text.get();
+  const auto font_size = static_cast<float>(std::max<uint16_t>(config->fontSize, 1));
+  const std::string value(text.chars, static_cast<std::size_t>(text.length));
+
+  if (measure == nullptr || !ok(measure->font(state->font_name)) || !ok(measure->size(font_size)) ||
+      !ok(measure->text(value.c_str()))) {
     const float fallback_width =
         static_cast<float>(text.length) * static_cast<float>(config->fontSize) * 0.56F;
     return {fallback_width, static_cast<float>(config->fontSize) * 1.25F};
@@ -62,33 +70,32 @@ Clay_Dimensions measure_text(Clay_StringSlice text, Clay_TextElementConfig* conf
 
   tvg::TextMetrics line_metrics = {};
   float line_height = static_cast<float>(config->lineHeight);
-  if (line_height <= 0.0F && ok(measure->metrics(line_metrics)) && line_metrics.advance > 0.0F) {
+  if (ok(measure->metrics(line_metrics)) && line_metrics.advance > 0.0F) {
     line_height = line_metrics.advance;
   }
   if (line_height <= 0.0F) {
     line_height = static_cast<float>(config->fontSize) * 1.25F;
   }
 
-  const char* cursor = text.chars;
-  const char* end = text.chars + text.length;
+  const char* cursor = value.c_str();
+  const char* end = cursor + value.size();
   float width = 0.0F;
   int32_t glyph_count = 0;
 
   while (cursor < end) {
-    const auto remaining = static_cast<std::size_t>(end - cursor);
-    const std::size_t cp_length =
-        std::min(utf8_codepoint_length(static_cast<unsigned char>(*cursor)), remaining);
+    const char* next = next_utf8(cursor, end);
+    const std::size_t cp_length = static_cast<std::size_t>(next - cursor);
     char glyph_text[5] = {};
     std::copy_n(cursor, cp_length, glyph_text);
 
     tvg::GlyphMetrics glyph_metrics = {};
-    if (ok(measure->metrics(glyph_text, glyph_metrics)) && glyph_metrics.advance > 0.0F) {
+    if (ok(measure->metrics(glyph_text, glyph_metrics))) {
       width += glyph_metrics.advance;
     } else {
       width += static_cast<float>(config->fontSize) * 0.56F;
     }
 
-    cursor += cp_length;
+    cursor = next;
     ++glyph_count;
   }
 

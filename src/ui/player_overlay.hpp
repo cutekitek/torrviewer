@@ -23,6 +23,7 @@ enum class PlayerOverlayAction {
   set_volume,
   toggle_audio_menu,
   toggle_buffer_menu,
+  focus_cache_size,
   select_audio_track,
   set_cache_size,
   fullscreen,
@@ -43,6 +44,11 @@ public:
   double selected_seek_seconds() const;
   std::size_t selected_audio_track_index() const;
   int selected_cache_size_mib() const;
+  bool cache_size_input_focused() const;
+  void append_cache_size_text(std::string_view value);
+  void backspace_cache_size_text();
+  void commit_cache_size_text();
+  void set_font_size(int font_size);
   void close_audio_menu();
   void close_menus();
 
@@ -66,9 +72,11 @@ private:
   void icon(Icon icon, float size = 18.0F);
   void icon_button(Clay_ElementId id, Icon icon, bool emphasized = false);
   void audio_track_row(Clay_ElementId id, std::string_view label, bool active);
-  void cache_preset_button(Clay_ElementId id, int mib, bool active);
+  void cache_size_input(std::string_view value, bool focused);
   void piece_rail(const TorrentSnapshot& torrent, float width);
   void status_overlay(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent);
+  [[nodiscard]] uint16_t scaled_font_size(uint16_t font_size) const;
+  [[nodiscard]] float line_height(uint16_t font_size) const;
 
   Clay_ElementId root_id_ = {};
   Clay_ElementId play_id_ = {};
@@ -81,6 +89,8 @@ private:
   Clay_ElementId audio_menu_id_ = {};
   Clay_ElementId buffer_button_id_ = {};
   Clay_ElementId buffer_menu_id_ = {};
+  Clay_ElementId buffer_input_id_ = {};
+  Clay_ElementId buffer_apply_id_ = {};
   Clay_ElementId fullscreen_id_ = {};
   Clay_ElementId stop_id_ = {};
   bool audio_menu_open_ = false;
@@ -89,8 +99,11 @@ private:
   double selected_seek_seconds_ = 0.0;
   std::size_t selected_audio_track_index_ = 0;
   int selected_cache_size_mib_ = 256;
+  int last_rendered_cache_size_mib_ = 256;
+  int font_size_ = 13;
+  bool buffer_input_focused_ = false;
+  std::string buffer_input_text_;
   std::vector<Clay_ElementId> audio_track_row_ids_;
-  std::vector<Clay_ElementId> cache_preset_ids_;
   std::deque<std::string> frame_strings_;
 };
 

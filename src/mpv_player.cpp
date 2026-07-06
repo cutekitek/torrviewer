@@ -207,6 +207,9 @@ void MpvPlayer::initialize() {
   set_optional_mpv_option(handle_, "input-default-bindings", "no");
   set_optional_mpv_option(handle_, "input-vo-keyboard", "no");
   set_optional_mpv_option(handle_, "force-window", "no");
+#if defined(_WIN32)
+  set_optional_mpv_option(handle_, "hwdec", "auto-safe");
+#endif
   check_mpv(mpv_set_option_string(handle_, "idle", "yes"), "mpv idle option");
   check_mpv(mpv_set_option_string(handle_, "keep-open", "yes"), "mpv keep-open option");
   set_optional_mpv_option(handle_, "audio-display", "no");

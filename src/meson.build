@@ -18,6 +18,7 @@ packed_resources = custom_target(
 
 torrview_sources = files(
   'app.cpp',
+  'app_settings.cpp',
   'cache_policy.cpp',
   'clay.cpp',
   'input_source.cpp',
@@ -30,15 +31,17 @@ torrview_sources = files(
   'ui/clay_renderer.cpp',
   'ui/file_browser_page.cpp',
   'ui/player_overlay.cpp',
+  'ui/settings_page.cpp',
   'ui/title_page.cpp',
 )
 
 windows_host = host_machine.system() == 'windows'
 production_win_subsystem = windows_host ? 'windows' : 'console'
+torrview_app_sources = torrview_sources + packed_resources
 
 executable(
   'torrview',
-  torrview_sources + packed_resources,
+  torrview_app_sources,
   dependencies: torrview_deps,
   include_directories: config_inc,
   win_subsystem: production_win_subsystem,
@@ -47,8 +50,8 @@ executable(
 
 if windows_host
   executable(
-    'torrview-debug',
-    torrview_sources,
+    'torrview-dev',
+    torrview_app_sources,
     dependencies: torrview_deps,
     include_directories: config_inc,
     win_subsystem: 'console',

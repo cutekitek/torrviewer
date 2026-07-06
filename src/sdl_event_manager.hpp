@@ -11,6 +11,7 @@ public:
   virtual void request_quit() = 0;
   virtual void window_metrics_changed() = 0;
   virtual void key_down(const SDL_KeyboardEvent& key) = 0;
+  virtual void text_input(const SDL_TextInputEvent& text) = 0;
   virtual void mouse_motion(const SDL_MouseMotionEvent& motion) = 0;
   virtual void mouse_button(const SDL_MouseButtonEvent& button) = 0;
   virtual void mouse_wheel(const SDL_MouseWheelEvent& wheel) = 0;

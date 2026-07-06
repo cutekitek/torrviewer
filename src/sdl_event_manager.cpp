@@ -22,6 +22,7 @@ void SdlEventManager::pump(SdlEventHandler& handler) {
       break;
 
     case SDL_EVENT_TEXT_INPUT:
+      handler.text_input(event.text);
       break;
 
     case SDL_EVENT_MOUSE_MOTION:

@@ -63,6 +63,15 @@ struct TorrentSnapshot {
   std::vector<TorrentPieceState> piece_states;
 };
 
+struct TorrentRuntimeSettings {
+  int upload_speed_kib = 1024;
+  int max_connections = 200;
+  std::string proxy_url;
+  bool proxy_peer_connections = true;
+  bool proxy_tracker_connections = true;
+  bool proxy_dns = true;
+};
+
 class TorrentService final : public TorrentStreamProvider {
 public:
   TorrentService();
@@ -76,6 +85,7 @@ public:
   void process_alerts();
   void reset();
   void set_cache_limit_mib(int limit_mib);
+  void set_runtime_settings(const TorrentRuntimeSettings& settings);
   const TorrentSnapshot& snapshot() const;
   std::string stream_uri_for_file(int file_index) const;
   std::unique_ptr<TorrentStreamReader> open_torrent_stream(const std::string& uri,
