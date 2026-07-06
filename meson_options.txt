@@ -6,3 +6,6 @@ option('freetype', type: 'feature', value: 'auto', description: 'Discover and li
 option('fontconfig', type: 'feature', value: 'auto', description: 'Discover and link Fontconfig when available')
 option('thorvg', type: 'feature', value: 'enabled', description: 'Build and link ThorVG from subprojects for UI text rendering')
 option('windows_static', type: 'boolean', value: false, description: 'Build a Windows-only static executable with bundled media dependencies')
+option('tracy', type: 'feature', value: 'disabled', description: 'Build with the Tracy profiler client')
+option('tracy_allocations', type: 'boolean', value: true, description: 'When Tracy is enabled, report global C++ new/delete allocations to Tracy')
+option('tracy_allocation_callstack_depth', type: 'integer', min: 0, max: 128, value: 16, description: 'Call stack depth used for Tracy allocation events')

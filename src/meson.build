@@ -38,6 +38,9 @@ torrview_sources = files(
 windows_host = host_machine.system() == 'windows'
 production_win_subsystem = windows_host ? 'windows' : 'console'
 torrview_app_sources = torrview_sources + packed_resources
+if tracy_dep.found() and get_option('tracy_allocations')
+  torrview_app_sources += files('tracy_allocations.cpp')
+endif
 
 executable(
   'torrview',

@@ -2,6 +2,7 @@
 
 #include "config.hpp"
 #include "logger.hpp"
+#include "profiler.hpp"
 #include "resources.hpp"
 
 #include <thorvg.h>
@@ -88,6 +89,12 @@ constexpr bool has_thorvg = true;
 constexpr bool has_thorvg = false;
 #endif
 
+#if defined(TORRVIEW_HAVE_TRACY)
+constexpr bool has_tracy = true;
+#else
+constexpr bool has_tracy = false;
+#endif
+
 constexpr SDL_DialogFileFilter source_filters[] = {
     {"Torrent and video files", "torrent;mkv;mp4;webm;avi;mov;m4v;mpg;mpeg;ts;m2ts;flv;wmv;ogv"},
     {"Video files", "mkv;mp4;webm;avi;mov;m4v;mpg;mpeg;ts;m2ts;flv;wmv;ogv"},
@@ -97,6 +104,7 @@ constexpr SDL_DialogFileFilter source_filters[] = {
 
 constexpr float player_controls_reveal_band = 72.0F;
 constexpr auto player_controls_hide_delay = std::chrono::milliseconds(2400);
+constexpr auto render_frame_interval = std::chrono::milliseconds(16);
 
 } // namespace
 
@@ -192,10 +200,17 @@ void Application::initialize() {
 void Application::run() {
   running_ = true;
   while (running_) {
+    const auto frame_started = Clock::now();
     event_manager_.pump(*this);
     consume_dialog_results();
     render();
-    SDL_Delay(1);
+    const auto frame_elapsed = Clock::now() - frame_started;
+    if (frame_elapsed < render_frame_interval) {
+      SDL_Delay(static_cast<Uint32>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(render_frame_interval -
+                                                                frame_elapsed)
+              .count()));
+    }
   }
 }
 
@@ -870,6 +885,7 @@ void Application::render() {
   if (player_ != nullptr && player_->has_file()) {
     player_->report_swap();
   }
+  TORRVIEW_PROFILE_FRAME();
 }
 
 void Application::render_settings_screen(float delta_time) {
@@ -919,7 +935,8 @@ void Application::log_startup() const {
                     << " libtorrent=" << available(has_libtorrent)
                     << " freetype=" << available(has_freetype)
                     << " fontconfig=" << available(has_fontconfig)
-                    << " thorvg=" << available(has_thorvg));
+                    << " thorvg=" << available(has_thorvg)
+                    << " tracy=" << available(has_tracy));
   TORRVIEW_LOG_INFO("Input shell: drop .torrent files, local video files, or magnet text; press "
                     "Ctrl+O to open a source file, Ctrl+V to paste a magnet link");
   TORRVIEW_LOG_INFO("Playback controls: Space play/pause, Left/Right seek, PageUp/PageDown long "

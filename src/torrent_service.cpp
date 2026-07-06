@@ -639,7 +639,7 @@ public:
     try {
       handle_.piece_priority(piece, lt::top_priority);
       if (!handle_.have_piece(piece)) {
-        handle_.set_piece_deadline(piece, 0, lt::torrent_handle::alert_when_available);
+        handle_.set_piece_deadline(piece, 0);
         TORRVIEW_LOG_DEBUG("torrent scheduler stream=" << stream_id_
                                                        << " urgent deadline piece=" << piece_key);
       } else {
@@ -813,8 +813,7 @@ public:
             continue;
           }
           handle_.reset_piece_deadline(piece_index);
-          handle_.set_piece_deadline(piece_index, 0,
-                                     lt::torrent_handle::alert_when_available);
+          handle_.set_piece_deadline(piece_index, 0);
           TORRVIEW_LOG_WARNING("torrent scheduler stream=" << stream_id_
                                                            << " stalled piece reprioritized piece="
                                                            << piece);
@@ -1045,26 +1044,16 @@ public:
       scheduler_->schedule_for_read(position, bytes);
     }
 
-    std::vector<char> piece_data;
-    if (!wait_for_piece(piece, piece_data)) {
+    if (!wait_for_piece(piece, piece_offset, static_cast<int>(to_copy), buffer)) {
       TORRVIEW_LOG_WARNING("torrent stream=" << stream_id_
                                              << " read failed waiting for piece="
                                              << static_cast<int>(piece)
                                              << " position=" << position);
       return -1;
     }
-
-    if (piece_offset < 0 ||
-        piece_offset + static_cast<int>(to_copy) > static_cast<int>(piece_data.size())) {
-      set_error("Torrent piece read returned too few bytes");
-      return -1;
-    }
-
-    std::memcpy(buffer, piece_data.data() + piece_offset, to_copy);
     {
       std::lock_guard lock(mutex_);
       position_ += static_cast<std::int64_t>(to_copy);
-      trim_piece_cache_locked();
     }
     return static_cast<std::int64_t>(to_copy);
   }
@@ -1081,7 +1070,10 @@ public:
       position_ = offset;
       cancelled_ = false;
       error_.clear();
-      trim_piece_cache_locked();
+      ++seek_generation_;
+      requested_pieces_.clear();
+      recheck_pieces_.clear();
+      condition_.notify_all();
     }
 
     if (scheduler_ != nullptr) {
@@ -1113,18 +1105,12 @@ public:
     bool requested = false;
     {
       std::lock_guard lock(mutex_);
-      requested = requested_pieces_.find(static_cast<int>(piece)) != requested_pieces_.end();
+      requested = requested_pieces_.erase(static_cast<int>(piece)) > 0;
+      recheck_pieces_.erase(static_cast<int>(piece));
     }
 
-    if (requested && handle_.is_valid()) {
-      try {
-        handle_.read_piece(piece);
-        TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_
-                                             << " read_piece requested from finished alert piece="
-                                             << static_cast<int>(piece));
-      } catch (const std::exception& error) {
-        set_error(error.what());
-      }
+    if (requested) {
+      condition_.notify_all();
     }
   }
 
@@ -1158,7 +1144,7 @@ public:
       if (error) {
         if (is_operation_canceled(error)) {
           rearm_request = requested && !cancelled_;
-        } else {
+        } else if (requested) {
           error_ = "Torrent piece read failed: " + error.message();
         }
       } else if (data == nullptr || size <= 0) {
@@ -1173,7 +1159,7 @@ public:
         }
       } else {
         if (requested) {
-          pieces_[piece_key] = std::vector<char>(data, data + size);
+          requested_pieces_.erase(piece_key);
         } else {
           TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_
                                                << " ignored unrequested read_piece data piece="
@@ -1206,11 +1192,17 @@ private:
     return position_;
   }
 
-  bool wait_for_piece(lt::piece_index_t piece, std::vector<char>& data) {
+  bool wait_for_piece(lt::piece_index_t piece, int offset, int length, char* buffer) {
     const int piece_key = static_cast<int>(piece);
+    if (read_verified_piece_bytes(piece, offset, length, buffer)) {
+      return true;
+    }
+
     bool should_request = false;
+    std::uint64_t seek_generation = 0;
     {
       std::lock_guard lock(mutex_);
+      seek_generation = seek_generation_;
       if (cancelled_) {
         TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_
                                              << " wait aborted by cancellation piece="
@@ -1222,10 +1214,6 @@ private:
                                                << piece_key << " error=" << error_);
         return false;
       }
-      if (auto found = pieces_.find(piece_key); found != pieces_.end()) {
-        data = found->second;
-        return true;
-      }
       should_request = requested_pieces_.insert(piece_key).second;
     }
 
@@ -1233,20 +1221,42 @@ private:
       request_piece(piece);
     }
 
-    std::unique_lock lock(mutex_);
-    condition_.wait(lock, [&] {
-      return cancelled_ || !error_.empty() || pieces_.find(piece_key) != pieces_.end();
-    });
+    while (true) {
+      std::unique_lock lock(mutex_);
+      condition_.wait_for(lock, std::chrono::milliseconds(500), [&] {
+        return cancelled_ || seek_generation_ != seek_generation || !error_.empty() ||
+               read_verified_piece_bytes(piece, offset, length, buffer);
+      });
 
-    if (cancelled_ || !error_.empty()) {
-      TORRVIEW_LOG_WARNING("torrent stream=" << stream_id_ << " wait ended without data piece="
-                                             << piece_key << " cancelled=" << cancelled_
-                                             << " error=" << error_);
+      if (cancelled_ || seek_generation_ != seek_generation || !error_.empty()) {
+        TORRVIEW_LOG_WARNING("torrent stream=" << stream_id_ << " wait ended without data piece="
+                                               << piece_key << " cancelled=" << cancelled_
+                                               << " stale_seek="
+                                               << (seek_generation_ != seek_generation)
+                                               << " error=" << error_);
+        return false;
+      }
+      if (read_verified_piece_bytes(piece, offset, length, buffer)) {
+        requested_pieces_.erase(piece_key);
+        recheck_pieces_.erase(piece_key);
+        return true;
+      }
+
+      lock.unlock();
+      request_piece(piece);
+    }
+  }
+
+  bool piece_verified(lt::piece_index_t piece) const {
+    try {
+      return handle_.is_valid() && handle_.have_piece(piece);
+    } catch (const std::exception&) {
       return false;
     }
+  }
 
-    data = pieces_.at(piece_key);
-    return true;
+  bool read_verified_piece_bytes(lt::piece_index_t piece, int offset, int length, char* buffer) const {
+    return piece_verified(piece) && read_memory_disk_bytes(piece, offset, length, buffer);
   }
 
   void request_piece(lt::piece_index_t piece) {
@@ -1261,12 +1271,21 @@ private:
       }
       handle_.piece_priority(piece, lt::top_priority);
       if (handle_.have_piece(piece)) {
-        handle_.read_piece(piece);
-        TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_
-                                             << " request_piece have_piece read_piece piece="
-                                             << static_cast<int>(piece));
+        bool should_recheck = false;
+        {
+          std::lock_guard lock(mutex_);
+          should_recheck = recheck_pieces_.insert(static_cast<int>(piece)).second;
+        }
+        if (should_recheck) {
+          handle_.force_recheck();
+          TORRVIEW_LOG_WARNING("torrent stream="
+                               << stream_id_
+                               << " requested piece is marked complete but missing from RAM; "
+                                  "forcing recheck piece="
+                               << static_cast<int>(piece));
+        }
       } else {
-        handle_.set_piece_deadline(piece, 0, lt::torrent_handle::alert_when_available);
+        handle_.set_piece_deadline(piece, 0);
         TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_
                                              << " request_piece deadline piece="
                                              << static_cast<int>(piece));
@@ -1283,18 +1302,6 @@ private:
     condition_.notify_all();
   }
 
-  void trim_piece_cache_locked() {
-    const std::int64_t torrent_offset = file_offset_ + position_;
-    const int current_piece = static_cast<int>(torrent_offset / piece_length_);
-    for (auto it = pieces_.begin(); it != pieces_.end();) {
-      if (it->first + 1 < current_piece) {
-        it = pieces_.erase(it);
-      } else {
-        ++it;
-      }
-    }
-  }
-
   lt::torrent_handle handle_;
   std::shared_ptr<const lt::torrent_info> info_;
   std::shared_ptr<StreamingScheduler> scheduler_;
@@ -1307,8 +1314,9 @@ private:
   std::int64_t position_ = 0;
   bool cancelled_ = false;
   std::string error_;
-  std::map<int, std::vector<char>> pieces_;
+  std::uint64_t seek_generation_ = 0;
   std::set<int> requested_pieces_;
+  std::set<int> recheck_pieces_;
 };
 
 class TorrentService::Impl final {

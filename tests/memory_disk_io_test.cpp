@@ -111,6 +111,13 @@ int main() {
   require(std::memcmp(read_back.data(), block.data() + 7, read_back.size()) == 0,
           "read bytes did not match written data");
 
+  std::array<char, 4096> direct_read{};
+  require(disk.read_bytes(storage, lt::piece_index_t{0}, 7, static_cast<int>(direct_read.size()),
+                          direct_read.data()),
+          "direct read did not find written bytes");
+  require(std::memcmp(direct_read.data(), block.data() + 7, direct_read.size()) == 0,
+          "direct read bytes did not match written data");
+
   bool missing_read_done = false;
   disk.async_read(storage, {lt::piece_index_t{1}, 0, 16},
                   [&](lt::disk_buffer_holder buffer, lt::storage_error const& error) {
@@ -167,12 +174,45 @@ int main() {
   write_piece(disk, io_context, storage, lt::piece_index_t{3}, block);
   require(disk.bytes_used() == static_cast<std::int64_t>(block.size() * 2),
           "cache eviction should hold memory near the configured limit");
+  require(!disk.read_bytes(storage, lt::piece_index_t{0}, 0, 16, direct_read.data()),
+          "direct read should miss evicted bytes");
   require(!read_piece_start(disk, io_context, storage, lt::piece_index_t{0}),
           "evicted piece should read as a storage miss");
   require(read_piece_start(disk, io_context, storage, lt::piece_index_t{2}),
           "retained piece should remain readable");
   torrview::MemoryDiskCacheStatus status = disk.cache_status(storage);
   require(status.evicted_read_misses > 0, "evicted read miss was not tracked");
+
+  bool evicted_hash_done = false;
+  std::vector<lt::sha256_hash> evicted_block_hashes(1);
+  disk.async_hash(storage, lt::piece_index_t{0}, evicted_block_hashes,
+                  lt::disk_interface::v1_hash,
+                  [&](lt::piece_index_t piece, lt::sha1_hash const& hash,
+                      lt::storage_error const& error) {
+                    require(!error, "evicted hash should not report a disk error");
+                    require(piece == lt::piece_index_t{0}, "evicted hash returned wrong piece");
+                    require(hash != lt::hasher(lt::span<char const>{block.data(), block.size()})
+                                        .final(),
+                            "evicted hash should not match the missing piece");
+                    require(evicted_block_hashes[0] != block_hashes[0],
+                            "evicted block hash should not match the missing block");
+                    evicted_hash_done = true;
+                  });
+  run_io(io_context);
+  require(evicted_hash_done, "evicted hash callback was not called");
+
+  bool evicted_hash2_done = false;
+  disk.async_hash2(storage, lt::piece_index_t{0}, 0, {},
+                   [&](lt::piece_index_t piece, lt::sha256_hash const& hash,
+                       lt::storage_error const& error) {
+                     require(!error, "evicted hash2 should not report a disk error");
+                     require(piece == lt::piece_index_t{0}, "evicted hash2 returned wrong piece");
+                     require(hash != block_hashes[0],
+                             "evicted hash2 should not match the missing block");
+                     evicted_hash2_done = true;
+                   });
+  run_io(io_context);
+  require(evicted_hash2_done, "evicted hash2 callback was not called");
 
   disk.update_retained_window(storage, 0);
   write_piece(disk, io_context, storage, lt::piece_index_t{0}, block);

@@ -219,6 +219,33 @@ if not thorvg_dep.found() and get_option('thorvg').allowed()
   endif
 endif
 
+tracy_dep = dependency('', required: false)
+if get_option('tracy').allowed()
+  tracy_proj = subproject(
+    'tracy',
+    default_options: [
+      'default_library=static',
+      'cpp_std=c++20',
+      'tracy_enable=true',
+      'callstack=' + get_option('tracy_allocation_callstack_depth').to_string(),
+    ],
+    required: get_option('tracy'),
+  )
+  if tracy_proj.found()
+    tracy_dep = tracy_proj.get_variable('tracy_dep')
+  endif
+endif
+
+if tracy_dep.found() and host_machine.system() == 'windows'
+  tracy_dep = declare_dependency(
+    dependencies: [
+      tracy_dep,
+      cpp.find_library('ws2_32', required: true),
+      cpp.find_library('dbghelp', required: true),
+    ],
+  )
+endif
+
 clay_dep = declare_dependency(
   include_directories: include_directories('third_party/clay', is_system: true),
 )
@@ -246,7 +273,7 @@ torrview_deps = [
   clay_dep,
 ]
 
-foreach dep : [mpv_dep, libtorrent_dep, freetype_dep, fontconfig_dep, thorvg_dep]
+foreach dep : [mpv_dep, libtorrent_dep, freetype_dep, fontconfig_dep, thorvg_dep, tracy_dep]
   if dep.found()
     torrview_deps += dep
   endif
@@ -259,6 +286,8 @@ config.set('TORRVIEW_HAVE_LIBTORRENT', libtorrent_dep.found())
 config.set('TORRVIEW_HAVE_FREETYPE', freetype_dep.found())
 config.set('TORRVIEW_HAVE_FONTCONFIG', fontconfig_dep.found())
 config.set('TORRVIEW_HAVE_THORVG', thorvg_dep.found())
+config.set('TORRVIEW_HAVE_TRACY', tracy_dep.found())
+config.set('TORRVIEW_TRACY_ALLOCATION_CALLSTACK_DEPTH', get_option('tracy_allocation_callstack_depth'))
 
 configure_file(
   input: 'src/config.hpp.in',
@@ -302,4 +331,6 @@ summary({
   'FreeType': freetype_dep.found(),
   'Fontconfig': fontconfig_dep.found(),
   'ThorVG': thorvg_dep.found(),
+  'Tracy': tracy_dep.found(),
+  'Tracy allocation hooks': tracy_dep.found() and get_option('tracy_allocations'),
 }, section: 'Dependencies')

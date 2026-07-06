@@ -42,6 +42,8 @@ public:
   void set_retained_window(libtorrent::storage_index_t storage, PieceWindow window);
   void clear_retained_window(libtorrent::storage_index_t storage);
   MemoryDiskCacheStatus cache_status(libtorrent::storage_index_t storage) const;
+  bool read_bytes(libtorrent::storage_index_t storage, libtorrent::piece_index_t piece, int offset,
+                  int length, char* buffer);
 
   libtorrent::storage_holder new_torrent(libtorrent::storage_params const& params,
                                          std::shared_ptr<void> const& torrent) override;
@@ -115,6 +117,8 @@ create_memory_disk_io(libtorrent::io_context& io_context,
 void set_memory_disk_cache_policy(CachePolicy policy);
 PieceWindow update_memory_disk_retained_window(std::int64_t torrent_byte_offset);
 MemoryDiskCacheStatus memory_disk_cache_status();
+bool read_memory_disk_bytes(libtorrent::piece_index_t piece, int offset, int length,
+                            char* buffer);
 
 } // namespace torrview
 #endif

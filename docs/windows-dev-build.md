@@ -20,6 +20,6 @@ The default output is:
 build-windows-dev/src/torrview-dev.exe
 ```
 
-The build script also copies the required MSYS2 runtime DLLs into `build-windows-dev/src`, next to `torrview-dev.exe`. Windows system DLLs are not copied.
+Run `torrview-dev.exe` from an MSYS2 shell, or make sure the matching MSYS2 `bin` directory is on `PATH`, so its runtime DLLs can be found.
 
 `torrview-dev.exe` is a Windows console application, so logs stay visible while developing and testing. The normal `torrview.exe` target remains the production GUI application and does not open a command window.

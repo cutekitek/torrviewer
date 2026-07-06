@@ -45,6 +45,14 @@ lt::storage_error make_eof_error(lt::operation_t operation) {
   return lt::storage_error(lt::error_code(boost::asio::error::eof), operation);
 }
 
+lt::sha1_hash missing_piece_hash() {
+  return (lt::sha1_hash::max)();
+}
+
+lt::sha256_hash missing_block_hash() {
+  return (lt::sha256_hash::max)();
+}
+
 void merge_written_range(std::vector<WriteRange>& ranges, WriteRange next) {
   if (next.begin >= next.end) {
     return;
@@ -178,11 +186,35 @@ public:
     return lt::disk_buffer_holder(allocator, copy, request.length);
   }
 
+  [[nodiscard]] bool read_into(const lt::peer_request& request, char* buffer) {
+    lt::storage_error error;
+    if (!valid_request(request, error, lt::operation_t::file_read) || buffer == nullptr) {
+      return false;
+    }
+
+    auto found = pieces_.find(request.piece);
+    if (found == pieces_.end() ||
+        !covers_range(found->second.written, request.start, request.start + request.length)) {
+      record_miss(request.piece);
+      return false;
+    }
+
+    std::memcpy(buffer, found->second.bytes.data() + request.start,
+                static_cast<std::size_t>(request.length));
+    return true;
+  }
+
   [[nodiscard]] lt::sha1_hash hash(lt::piece_index_t piece,
                                    lt::span<lt::sha256_hash> block_hashes,
                                    lt::disk_job_flags_t flags, lt::storage_error& error) {
-    const MemoryPiece* data = full_piece(piece, error, lt::operation_t::file_read);
+    lt::storage_error read_error;
+    const MemoryPiece* data = full_piece(piece, read_error, lt::operation_t::file_read);
     if (data == nullptr) {
+      if (read_error.ec == boost::asio::error::eof) {
+        std::fill(block_hashes.begin(), block_hashes.end(), missing_block_hash());
+        return missing_piece_hash();
+      }
+      error = read_error;
       return {};
     }
 
@@ -219,8 +251,7 @@ public:
     auto found = pieces_.find(piece);
     if (found == pieces_.end() || !covers_range(found->second.written, offset, offset + length)) {
       record_miss(piece);
-      error = make_eof_error(lt::operation_t::file_read);
-      return {};
+      return missing_block_hash();
     }
 
     lt::span<char const> block{found->second.bytes.data() + offset, length};
@@ -404,6 +435,16 @@ public:
       return status;
     }
     return storage->cache_status(bytes_used_);
+  }
+
+  [[nodiscard]] bool read_bytes(lt::storage_index_t index, lt::piece_index_t piece, int offset,
+                                int length, char* buffer) {
+    std::lock_guard lock(mutex_);
+    MemoryTorrentStorage* storage = find_storage_locked(index);
+    if (storage == nullptr) {
+      return false;
+    }
+    return storage->read_into({piece, offset, length}, buffer);
   }
 
   lt::storage_holder new_torrent(lt::storage_params const& params, lt::disk_interface& owner) {
@@ -616,6 +657,11 @@ MemoryDiskCacheStatus MemoryDiskIO::cache_status(lt::storage_index_t storage) co
   return impl_->cache_status(storage);
 }
 
+bool MemoryDiskIO::read_bytes(lt::storage_index_t storage, lt::piece_index_t piece, int offset,
+                              int length, char* buffer) {
+  return impl_->read_bytes(storage, piece, offset, length, buffer);
+}
+
 lt::storage_holder MemoryDiskIO::new_torrent(lt::storage_params const& params,
                                              std::shared_ptr<void> const&) {
   return impl_->new_torrent(params, *this);
@@ -754,6 +800,17 @@ MemoryDiskCacheStatus memory_disk_cache_status() {
     }
   }
   return status;
+}
+
+bool read_memory_disk_bytes(lt::piece_index_t piece, int offset, int length, char* buffer) {
+  std::lock_guard lock(registry_mutex);
+  for (MemoryDiskIO* disk : registry) {
+    if (disk != nullptr &&
+        disk->read_bytes(lt::storage_index_t{0}, piece, offset, length, buffer)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 } // namespace torrview
