@@ -1,16 +1,23 @@
 #pragma once
 
+#include "gl_api.hpp"
 #include "mpv_player.hpp"
+#include "settings.hpp"
 #include "torrent_service.hpp"
+#include "ui/page.hpp"
 #include "window_state.hpp"
 
 #include "clay.h"
 
+#include <chrono>
 #include <deque>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace torrview {
+class Application;
+}
 
 namespace torrview::ui {
 
@@ -30,8 +37,15 @@ enum class PlayerOverlayAction {
   stop,
 };
 
-class PlayerOverlay {
+class PlayerOverlay : public Page {
 public:
+  PlayerOverlay(Application& app, Settings& settings, PointerState& pointer,
+                Clay_Context* clay_context, MpvPlayer* player, TorrentService& torrent_service);
+  void open();
+  void draw(RenderContext& render_context) override;
+  bool handle_event(const SDL_Event& event) override;
+  void close() override;
+
   void initialize_ids();
   void begin_frame();
   void build(const WindowMetrics& metrics, const PlaybackSnapshot& snapshot,
@@ -75,9 +89,29 @@ private:
   void cache_size_input(std::string_view value, bool focused);
   void piece_rail(const TorrentSnapshot& torrent, float width);
   void status_overlay(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent);
+  bool key_down(const SDL_KeyboardEvent& key);
+  void text_input(const SDL_TextInputEvent& text);
+  void mouse_motion(const SDL_MouseMotionEvent& motion);
+  void mouse_button(const SDL_MouseButtonEvent& button);
+  void dispatch_action(PlayerOverlayAction action);
+  void update_volume_from_pointer();
+  void update_controls_visibility(const WindowMetrics& metrics);
+  void return_to_file_browser_after_eof();
+  [[nodiscard]] bool controls_visible() const;
+  [[nodiscard]] bool has_player_file() const;
   [[nodiscard]] uint16_t scaled_font_size(uint16_t font_size) const;
   [[nodiscard]] float line_height(uint16_t font_size) const;
 
+  Application& app_;
+  Settings& settings_;
+  PointerState& pointer_;
+  Clay_Context* clay_context_ = nullptr;
+  MpvPlayer* player_ = nullptr;
+  TorrentService& torrent_service_;
+  bool ids_initialized_ = false;
+  bool controls_visible_ = true;
+  bool dragging_volume_ = false;
+  std::chrono::steady_clock::time_point controls_last_hover_;
   Clay_ElementId root_id_ = {};
   Clay_ElementId play_id_ = {};
   Clay_ElementId control_panel_id_ = {};

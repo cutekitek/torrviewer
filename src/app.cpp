@@ -102,8 +102,6 @@ constexpr SDL_DialogFileFilter source_filters[] = {
     {"All files", "*"},
 };
 
-constexpr float player_controls_reveal_band = 72.0F;
-constexpr auto player_controls_hide_delay = std::chrono::milliseconds(2400);
 constexpr auto render_frame_interval = std::chrono::milliseconds(16);
 
 } // namespace
@@ -138,9 +136,7 @@ void Application::initialize() {
   }
   sdl_initialized_ = true;
   const char* base_path = SDL_GetBasePath();
-  settings_path_ = settings_path_for_executable_dir(base_path);
-  settings_ = load_app_settings(settings_path_);
-  cache_limit_mib_ = settings_.buffer_size_mib;
+  Settings::instance().load(base_path);
 
   set_gl_attribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
   set_gl_attribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -195,6 +191,7 @@ void Application::initialize() {
 
   update_window_title();
   log_startup();
+  navigate<ui::TitlePage>();
 }
 
 void Application::run() {
@@ -203,7 +200,7 @@ void Application::run() {
     const auto frame_started = Clock::now();
     event_manager_.pump(*this);
     consume_dialog_results();
-    render();
+    draw();
     const auto frame_elapsed = Clock::now() - frame_started;
     if (frame_elapsed < render_frame_interval) {
       SDL_Delay(static_cast<Uint32>(
@@ -219,63 +216,19 @@ void Application::request_quit() { running_ = false; }
 void Application::window_metrics_changed() { update_window_metrics(); }
 
 void Application::key_down(const SDL_KeyboardEvent& key) {
+  SDL_Event event{};
+  event.type = SDL_EVENT_KEY_DOWN;
+  event.key = key;
+
+  if (ui_app_.handle_event(event)) {
+    return;
+  }
+
   if (key.repeat) {
     return;
   }
 
   const bool command = (key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
-
-  if (settings_open_) {
-    if (command && key.key == SDLK_V && settings_page_.has_focus()) {
-      char* clipboard = SDL_GetClipboardText();
-      if (clipboard != nullptr) {
-        settings_page_.append_text(clipboard);
-        SDL_free(clipboard);
-      }
-      return;
-    }
-    if (key.key == SDLK_ESCAPE) {
-      settings_open_ = false;
-      return;
-    }
-    if (key.key == SDLK_BACKSPACE) {
-      settings_page_.backspace();
-      return;
-    }
-    if (key.key == SDLK_TAB) {
-      settings_page_.focus_next();
-      return;
-    }
-    if (key.key == SDLK_RETURN || key.key == SDLK_KP_ENTER) {
-      save_settings_page();
-      return;
-    }
-    return;
-  }
-
-  if (player_overlay_.cache_size_input_focused()) {
-    if (command && key.key == SDLK_V) {
-      char* clipboard = SDL_GetClipboardText();
-      if (clipboard != nullptr) {
-        player_overlay_.append_cache_size_text(clipboard);
-        SDL_free(clipboard);
-      }
-      return;
-    }
-    if (key.key == SDLK_BACKSPACE) {
-      player_overlay_.backspace_cache_size_text();
-      return;
-    }
-    if (key.key == SDLK_RETURN || key.key == SDLK_KP_ENTER) {
-      player_overlay_.commit_cache_size_text();
-      handle_player_action(ui::PlayerOverlayAction::set_cache_size);
-      return;
-    }
-    if (key.key == SDLK_ESCAPE) {
-      player_overlay_.close_menus();
-      return;
-    }
-  }
 
   if (key.key == SDLK_ESCAPE) {
     if (is_fullscreen()) {
@@ -287,54 +240,13 @@ void Application::key_down(const SDL_KeyboardEvent& key) {
   }
 
   if (command && key.key == SDLK_O) {
-    show_open_source_dialog();
+    show_source_dialog();
     return;
   }
 
   if (command && key.key == SDLK_V) {
     paste_clipboard();
     return;
-  }
-
-  if (player_ != nullptr && player_->has_file()) {
-    switch (key.key) {
-    case SDLK_SPACE:
-      player_->toggle_pause();
-      break;
-    case SDLK_LEFT:
-      player_->seek_relative(-10.0);
-      break;
-    case SDLK_RIGHT:
-      player_->seek_relative(30.0);
-      break;
-    case SDLK_HOME:
-      player_->seek_absolute(0.0);
-      break;
-    case SDLK_END:
-      player_->seek_absolute(player_->snapshot().duration);
-      break;
-    case SDLK_PAGEUP:
-      player_->seek_relative(300.0);
-      break;
-    case SDLK_PAGEDOWN:
-      player_->seek_relative(-300.0);
-      break;
-    case SDLK_UP:
-      player_->adjust_volume(5.0);
-      break;
-    case SDLK_DOWN:
-      player_->adjust_volume(-5.0);
-      break;
-    case SDLK_A:
-      player_->select_audio_track_relative(1);
-      break;
-    case SDLK_F:
-    case SDLK_F11:
-      toggle_fullscreen();
-      break;
-    default:
-      break;
-    }
   }
 }
 
@@ -343,81 +255,35 @@ void Application::text_input(const SDL_TextInputEvent& text) {
     return;
   }
 
-  if (settings_open_) {
-    settings_page_.append_text(text.text);
-    return;
-  }
-
-  if (player_overlay_.cache_size_input_focused()) {
-    player_overlay_.append_cache_size_text(text.text);
-  }
+  SDL_Event event{};
+  event.type = SDL_EVENT_TEXT_INPUT;
+  event.text = text;
+  ui_app_.handle_event(event);
 }
 
 void Application::mouse_motion(const SDL_MouseMotionEvent& motion) {
   pointer_.x = motion.x;
   pointer_.y = motion.y;
   pointer_.buttons = motion.state;
-  if (dragging_volume_) {
-    update_volume_from_pointer();
-  }
+  SDL_Event event{};
+  event.type = SDL_EVENT_MOUSE_MOTION;
+  event.motion = motion;
+  ui_app_.handle_event(event);
 }
 
 void Application::mouse_button(const SDL_MouseButtonEvent& button) {
   pointer_.x = button.x;
   pointer_.y = button.y;
-  if (button.button != SDL_BUTTON_LEFT) {
-    if (button.down) {
-      pointer_.buttons |= SDL_BUTTON_MASK(button.button);
-    } else {
-      pointer_.buttons &= ~SDL_BUTTON_MASK(button.button);
-    }
-    return;
-  }
-
   if (button.down) {
     pointer_.buttons |= SDL_BUTTON_MASK(button.button);
-    if (clay_context_ != nullptr && player_ != nullptr && player_->has_file()) {
-      Clay_SetCurrentContext(clay_context_);
-      if (player_overlay_.pointer_over_volume_bar()) {
-        dragging_volume_ = true;
-        update_volume_from_pointer();
-      }
-    }
-    return;
+  } else {
+    pointer_.buttons &= ~SDL_BUTTON_MASK(button.button);
   }
 
-  pointer_.buttons &= ~SDL_BUTTON_MASK(button.button);
-  if (dragging_volume_) {
-    update_volume_from_pointer();
-    dragging_volume_ = false;
-    return;
-  }
-
-  if (clay_context_ == nullptr) {
-    return;
-  }
-
-  Clay_SetCurrentContext(clay_context_);
-  if (settings_open_) {
-    handle_settings_click();
-    return;
-  }
-
-  if (player_ != nullptr && player_->has_file()) {
-    handle_player_click();
-    return;
-  }
-
-  if (torrent_service_.snapshot().state != TorrentLoadState::idle) {
-    handle_file_browser_click();
-    return;
-  }
-
-  if (Clay_PointerOver(title_page_.settings_button_id())) {
-    open_settings();
-  } else if (Clay_PointerOver(title_page_.source_panel_id())) {
-    show_open_source_dialog();
-  }
+  SDL_Event event{};
+  event.type = button.down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+  event.button = button;
+  ui_app_.handle_event(event);
 }
 
 void Application::mouse_wheel(const SDL_MouseWheelEvent& wheel) {
@@ -507,54 +373,54 @@ void Application::initialize_clay() {
   text_measure_state_.font_name = font_name_;
   text_measure_state_.text.reset(tvg::Text::gen());
   Clay_SetMeasureTextFunction(ui::measure_text, &text_measure_state_);
-  title_page_.initialize_ids();
-  file_browser_page_.initialize_ids();
-  player_overlay_.initialize_ids();
-  settings_page_.initialize_ids();
+  register_pages();
   last_frame_time_ = Clock::now();
-  player_controls_last_hover_ = last_frame_time_;
 }
 
-void Application::show_open_source_dialog() {
+void Application::register_pages() {
+  ui_app_.register_page<ui::TitlePage>(
+      [this] {
+        return std::make_unique<ui::TitlePage>(*this, Settings::instance(), drag_active_,
+                                               last_input_);
+      });
+  ui_app_.register_page<ui::FileBrowserPage>(
+      [this] {
+        return std::make_unique<ui::FileBrowserPage>(*this, Settings::instance(), player_.get(),
+                                                     torrent_service_);
+      });
+  ui_app_.register_page<ui::SettingsPage>(
+      [this] {
+        return std::make_unique<ui::SettingsPage>(*this, Settings::instance(), player_.get(),
+                                                  torrent_service_);
+      });
+  ui_app_.register_page<ui::PlayerOverlay>(
+      [this] {
+        return std::make_unique<ui::PlayerOverlay>(*this, Settings::instance(), pointer_,
+                                                   clay_context_,
+                                                   player_.get(), torrent_service_);
+      });
+}
+
+void Application::show_source_dialog() {
   SDL_ShowOpenFileDialog(open_file_dialog_callback, nullptr, window_, source_filters, 4, nullptr,
                          false);
 }
 
-void Application::open_settings() {
-  settings_open_ = true;
-  settings_page_.open(settings_);
-  settings_page_.set_font_size(settings_.font_size);
-  player_overlay_.close_menus();
-}
-
-void Application::save_settings_page() {
-  settings_page_.write_settings(settings_);
-  settings_ = clamp_settings(settings_);
-  settings_.buffer_size_mib = cache_limit_mib_;
-  save_app_settings(settings_path_, settings_);
-  apply_settings();
-  settings_open_ = false;
-}
-
 TorrentRuntimeSettings Application::runtime_settings_from_app_settings() const {
   TorrentRuntimeSettings runtime;
-  runtime.upload_speed_kib = settings_.upload_speed_kib;
-  runtime.max_connections = settings_.max_connections;
-  runtime.proxy_url = settings_.proxy_url;
-  runtime.proxy_peer_connections = settings_.proxy_peer_connections;
-  runtime.proxy_tracker_connections = settings_.proxy_tracker_connections;
-  runtime.proxy_dns = settings_.proxy_dns;
+  const AppSettings& app_settings = Settings::instance().values();
+  runtime.upload_speed_kib = app_settings.upload_speed_kib;
+  runtime.max_connections = app_settings.max_connections;
+  runtime.proxy_url = app_settings.proxy_url;
+  runtime.proxy_peer_connections = app_settings.proxy_peer_connections;
+  runtime.proxy_tracker_connections = app_settings.proxy_tracker_connections;
+  runtime.proxy_dns = app_settings.proxy_dns;
   return runtime;
 }
 
 void Application::apply_settings() {
-  settings_ = clamp_settings(settings_);
-  cache_limit_mib_ = settings_.buffer_size_mib;
-  title_page_.set_font_size(settings_.font_size);
-  file_browser_page_.set_font_size(settings_.font_size);
-  player_overlay_.set_font_size(settings_.font_size);
-  settings_page_.set_font_size(settings_.font_size);
-  torrent_service_.set_cache_limit_mib(cache_limit_mib_);
+  Settings::instance().replace(Settings::instance().values());
+  torrent_service_.set_cache_limit_mib(Settings::instance().values().buffer_size_mib);
   torrent_service_.set_runtime_settings(runtime_settings_from_app_settings());
 }
 
@@ -600,14 +466,12 @@ void Application::accept_input(ParsedInput input) {
   last_input_ = std::move(input);
   if (last_input_->kind == InputKind::local_media_file) {
     torrent_service_.reset();
-    selected_torrent_file_index_.reset();
     if (player_ == nullptr || !player_->available()) {
       TORRVIEW_LOG_ERROR("Local playback requires libmpv, but this build was configured without it");
     } else {
       try {
         player_->load_file(last_input_->value);
-        player_controls_visible_ = true;
-        player_controls_last_hover_ = Clock::now();
+        navigate<ui::PlayerOverlay>();
       } catch (const std::exception& error) {
         TORRVIEW_LOG_ERROR("Local playback failed: " << error.what());
       }
@@ -617,182 +481,23 @@ void Application::accept_input(ParsedInput input) {
     if (player_ != nullptr && player_->has_file()) {
       player_->stop();
     }
-    selected_torrent_file_index_.reset();
     try {
       if (last_input_->kind == InputKind::torrent_file) {
         torrent_service_.load_torrent_file(last_input_->value);
       } else {
         torrent_service_.load_magnet(last_input_->value);
       }
+      navigate<ui::FileBrowserPage>();
     } catch (const std::exception& error) {
       TORRVIEW_LOG_ERROR("Torrent metadata load failed: " << error.what());
     }
   } else {
     torrent_service_.reset();
-    selected_torrent_file_index_.reset();
+    navigate<ui::TitlePage>();
   }
 
   TORRVIEW_LOG_INFO("Input: " << input_kind_label(last_input_->kind) << " - "
                               << compact_value(last_input_->value));
-  update_window_title();
-}
-
-void Application::handle_file_browser_click() {
-  switch (file_browser_page_.hit_test_click()) {
-  case ui::FileBrowserAction::open_source:
-    show_open_source_dialog();
-    break;
-  case ui::FileBrowserAction::open_settings:
-    open_settings();
-    break;
-  case ui::FileBrowserAction::select_file:
-    selected_torrent_file_index_ = file_browser_page_.selected_file_index();
-    TORRVIEW_LOG_INFO("Selected torrent file index " << *selected_torrent_file_index_);
-    if (player_ == nullptr || !player_->available()) {
-      TORRVIEW_LOG_ERROR("Torrent playback requires libmpv, but this build was configured without it");
-    } else {
-      const std::string uri = torrent_service_.stream_uri_for_file(*selected_torrent_file_index_);
-      if (uri.empty()) {
-        TORRVIEW_LOG_ERROR("Torrent stream is not available for selected file");
-      } else {
-        try {
-          player_->load_file(uri);
-          player_controls_visible_ = true;
-          player_controls_last_hover_ = Clock::now();
-        } catch (const std::exception& error) {
-          TORRVIEW_LOG_ERROR("Torrent playback failed: " << error.what());
-        }
-      }
-    }
-    update_window_title();
-    break;
-  case ui::FileBrowserAction::none:
-    break;
-  }
-}
-
-void Application::handle_settings_click() {
-  switch (settings_page_.hit_test_click()) {
-  case ui::SettingsPageAction::save:
-    save_settings_page();
-    break;
-  case ui::SettingsPageAction::close:
-    settings_open_ = false;
-    break;
-  case ui::SettingsPageAction::none:
-    break;
-  }
-}
-
-void Application::handle_player_click() {
-  if (!player_controls_visible_) {
-    return;
-  }
-
-  handle_player_action(player_overlay_.hit_test_click());
-}
-
-void Application::handle_player_action(ui::PlayerOverlayAction action) {
-  if (player_ == nullptr) {
-    return;
-  }
-
-  switch (action) {
-  case ui::PlayerOverlayAction::toggle_pause:
-    player_->toggle_pause();
-    break;
-  case ui::PlayerOverlayAction::seek_back:
-    player_->seek_relative(-10.0);
-    break;
-  case ui::PlayerOverlayAction::seek_forward:
-    player_->seek_relative(30.0);
-    break;
-  case ui::PlayerOverlayAction::seek_absolute:
-    player_->seek_absolute(player_overlay_.selected_seek_seconds());
-    break;
-  case ui::PlayerOverlayAction::set_volume:
-    player_->set_volume(player_overlay_.volume_from_pointer(pointer_.x));
-    break;
-  case ui::PlayerOverlayAction::toggle_audio_menu:
-    break;
-  case ui::PlayerOverlayAction::toggle_buffer_menu:
-    break;
-  case ui::PlayerOverlayAction::focus_cache_size:
-    break;
-  case ui::PlayerOverlayAction::select_audio_track:
-    player_->select_audio_track(player_overlay_.selected_audio_track_index());
-    break;
-  case ui::PlayerOverlayAction::set_cache_size:
-    cache_limit_mib_ = player_overlay_.selected_cache_size_mib();
-    settings_.buffer_size_mib = cache_limit_mib_;
-    save_app_settings(settings_path_, settings_);
-    torrent_service_.set_cache_limit_mib(cache_limit_mib_);
-    TORRVIEW_LOG_INFO("Cache limit set to " << cache_limit_mib_ << " MiB");
-    break;
-  case ui::PlayerOverlayAction::fullscreen:
-    toggle_fullscreen();
-    break;
-  case ui::PlayerOverlayAction::stop:
-    player_->stop();
-    update_window_title();
-    break;
-  case ui::PlayerOverlayAction::none:
-    break;
-  }
-}
-
-void Application::update_volume_from_pointer() {
-  if (player_ == nullptr) {
-    return;
-  }
-
-  player_->set_volume(player_overlay_.volume_from_pointer(pointer_.x));
-}
-
-void Application::update_player_controls_visibility(Clock::time_point now) {
-  if (dragging_volume_) {
-    player_controls_visible_ = true;
-    player_controls_last_hover_ = now;
-    return;
-  }
-
-  const bool pointer_in_reveal_band =
-      pointer_.y >= static_cast<float>(metrics_.logical_height) - player_controls_reveal_band;
-  if (!player_controls_visible_ && pointer_in_reveal_band) {
-    player_controls_visible_ = true;
-    player_controls_last_hover_ = now;
-    return;
-  }
-
-  if (!player_controls_visible_) {
-    return;
-  }
-
-  if (pointer_in_reveal_band || player_overlay_.pointer_over_controls()) {
-    player_controls_last_hover_ = now;
-    return;
-  }
-
-  if (now - player_controls_last_hover_ >= player_controls_hide_delay) {
-    player_controls_visible_ = false;
-    player_overlay_.close_menus();
-  }
-}
-
-void Application::return_to_torrent_file_browser_after_eof() {
-  if (player_ == nullptr) {
-    return;
-  }
-
-  const PlaybackSnapshot snapshot = player_->snapshot();
-  if (!snapshot.eof_reached || !snapshot.path.starts_with("torrview://")) {
-    return;
-  }
-
-  TORRVIEW_LOG_INFO("Torrent playback ended; returning to file browser");
-  player_->stop();
-  player_controls_visible_ = true;
-  player_overlay_.close_menus();
   update_window_title();
 }
 
@@ -829,13 +534,10 @@ void Application::update_window_title() {
   if (last_input_.has_value()) {
     title << " - " << input_kind_label(last_input_->kind) << ": "
           << compact_value(last_input_->value, 72);
-    if (selected_torrent_file_index_.has_value()) {
-      const TorrentSnapshot& torrent = torrent_service_.snapshot();
-      const TorrentFileInfo* file = find_torrent_file(torrent, *selected_torrent_file_index_);
-      title << " - "
-            << compact_value(file != nullptr ? file->path
-                                             : "file " + std::to_string(*selected_torrent_file_index_),
-                             72);
+    const TorrentSnapshot& torrent = torrent_service_.snapshot();
+    if (torrent.active_file_index >= 0) {
+      const TorrentFileInfo* file = find_torrent_file(torrent, torrent.active_file_index);
+      title << " - " << compact_value(file != nullptr ? file->path : "torrent playback", 72);
     }
   } else {
     title << " - Drop .torrent, paste magnet, or press Ctrl+O";
@@ -844,7 +546,7 @@ void Application::update_window_title() {
   SDL_SetWindowTitle(window_, title.str().c_str());
 }
 
-void Application::render() {
+void Application::draw() {
   basic_gl_.viewport(0, 0, metrics_.pixel_width, metrics_.pixel_height);
   basic_gl_.disable(GL_DEPTH_TEST);
   basic_gl_.disable(GL_SCISSOR_TEST);
@@ -852,13 +554,12 @@ void Application::render() {
   basic_gl_.clear(GL_COLOR_BUFFER_BIT);
 
   const auto now = Clock::now();
-  const float delta_time = std::chrono::duration<float>(now - last_frame_time_).count();
+  current_delta_time_ = std::chrono::duration<float>(now - last_frame_time_).count();
   last_frame_time_ = now;
 
   if (player_ != nullptr) {
     player_->process_events();
   }
-  return_to_torrent_file_browser_after_eof();
   torrent_service_.process_alerts();
 
   Clay_SetCurrentContext(clay_context_);
@@ -866,66 +567,23 @@ void Application::render() {
                             .height = static_cast<float>(metrics_.logical_height)});
   Clay_SetPointerState({.x = pointer_.x, .y = pointer_.y},
                        (pointer_.buttons & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0);
-  Clay_UpdateScrollContainers(true, {.x = pointer_.wheel_x * 24.0F, .y = -pointer_.wheel_y * 24.0F},
-                              delta_time);
+  Clay_UpdateScrollContainers(
+      true, {.x = pointer_.wheel_x * 24.0F, .y = -pointer_.wheel_y * 24.0F},
+      current_delta_time_);
   pointer_.wheel_x = 0.0F;
   pointer_.wheel_y = 0.0F;
 
-  if (settings_open_) {
-    render_settings_screen(delta_time);
-  } else if (player_ != nullptr && player_->has_file()) {
-    render_player_screen(delta_time);
-  } else if (torrent_service_.snapshot().state != TorrentLoadState::idle) {
-    render_file_browser_screen(delta_time);
-  } else {
-    render_title_screen(delta_time);
-  }
+  ui::RenderContext render_context(clay_context_, metrics_, context_, basic_gl_);
+  Clay_BeginLayout();
+  ui_app_.draw(render_context);
+  Clay_RenderCommandArray commands = Clay_EndLayout(current_delta_time_);
+  clay_renderer_->render(commands);
 
   SDL_GL_SwapWindow(window_);
   if (player_ != nullptr && player_->has_file()) {
     player_->report_swap();
   }
   TORRVIEW_PROFILE_FRAME();
-}
-
-void Application::render_settings_screen(float delta_time) {
-  settings_page_.begin_frame();
-  Clay_BeginLayout();
-  settings_page_.build(metrics_);
-  Clay_RenderCommandArray commands = Clay_EndLayout(delta_time);
-  clay_renderer_->render(commands);
-}
-
-void Application::render_title_screen(float delta_time) {
-  title_page_.begin_frame();
-  Clay_BeginLayout();
-  title_page_.build(metrics_, drag_active_, last_input_);
-  Clay_RenderCommandArray commands = Clay_EndLayout(delta_time);
-  clay_renderer_->render(commands);
-}
-
-void Application::render_file_browser_screen(float delta_time) {
-  file_browser_page_.begin_frame();
-  Clay_BeginLayout();
-  file_browser_page_.build(metrics_, torrent_service_.snapshot(), selected_torrent_file_index_);
-  Clay_RenderCommandArray commands = Clay_EndLayout(delta_time);
-  clay_renderer_->render(commands);
-}
-
-void Application::render_player_screen(float delta_time) {
-  basic_gl_.viewport(0, 0, metrics_.pixel_width, metrics_.pixel_height);
-  player_->render(metrics_);
-  basic_gl_.viewport(0, 0, metrics_.pixel_width, metrics_.pixel_height);
-  basic_gl_.disable(GL_DEPTH_TEST);
-  basic_gl_.disable(GL_SCISSOR_TEST);
-
-  player_overlay_.begin_frame();
-  Clay_BeginLayout();
-  player_overlay_.build(metrics_, player_->snapshot(), torrent_service_.snapshot(), is_fullscreen(),
-                        player_controls_visible_);
-  Clay_RenderCommandArray commands = Clay_EndLayout(delta_time);
-  update_player_controls_visibility(Clock::now());
-  clay_renderer_->render(commands);
 }
 
 void Application::log_startup() const {

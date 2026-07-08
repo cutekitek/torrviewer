@@ -1,6 +1,9 @@
 #pragma once
 
+#include "mpv_player.hpp"
+#include "settings.hpp"
 #include "torrent_service.hpp"
+#include "ui/page.hpp"
 #include "window_state.hpp"
 
 #include "clay.h"
@@ -12,6 +15,10 @@
 #include <string_view>
 #include <vector>
 
+namespace torrview {
+class Application;
+}
+
 namespace torrview::ui {
 
 enum class FileBrowserAction {
@@ -21,8 +28,15 @@ enum class FileBrowserAction {
   select_file,
 };
 
-class FileBrowserPage {
+class FileBrowserPage : public Page {
 public:
+  FileBrowserPage(Application& app, Settings& settings, MpvPlayer* player,
+                  TorrentService& torrent_service);
+  void open();
+  void draw(RenderContext& render_context) override;
+  bool handle_event(const SDL_Event& event) override;
+  void close() override;
+
   void initialize_ids();
   void begin_frame();
   void build(const WindowMetrics& metrics, const TorrentSnapshot& snapshot,
@@ -41,6 +55,10 @@ private:
   [[nodiscard]] uint16_t scaled_font_size(uint16_t font_size) const;
   [[nodiscard]] float line_height(uint16_t font_size) const;
 
+  Application& app_;
+  Settings& settings_;
+  MpvPlayer* player_ = nullptr;
+  TorrentService& torrent_service_;
   Clay_ElementId open_source_id_ = {};
   Clay_ElementId settings_id_ = {};
   Clay_ElementId file_list_id_ = {};

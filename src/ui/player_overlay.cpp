@@ -1,5 +1,9 @@
 #include "ui/player_overlay.hpp"
 
+#include "../app.hpp"
+#include "logger.hpp"
+#include "ui/render_context.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -7,6 +11,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <utility>
 
 namespace torrview::ui {
 namespace {
@@ -27,6 +32,9 @@ constexpr Clay_Color color_overlay = {12.0F, 13.0F, 15.0F, 224.0F};
 constexpr Clay_Color color_border = {198.0F, 203.0F, 214.0F, 255.0F};
 constexpr float icon_button_size = 36.0F;
 constexpr float volume_bar_width = 138.0F;
+constexpr float controls_reveal_band = 72.0F;
+constexpr auto controls_hide_delay = std::chrono::milliseconds(2400);
+constexpr Clay_Padding text_padding = {4, 4, 4, 4};
 
 Clay_String clay_string(std::string_view value) {
   const std::size_t max_length = static_cast<std::size_t>(std::numeric_limits<int32_t>::max());
@@ -175,22 +183,92 @@ bool has_torrent_playback_state(const TorrentSnapshot& torrent) {
 
 } // namespace
 
+PlayerOverlay::PlayerOverlay(Application& app, Settings& settings, PointerState& pointer,
+                             Clay_Context* clay_context, MpvPlayer* player,
+                             TorrentService& torrent_service)
+    : app_(app), settings_(settings), pointer_(pointer), clay_context_(clay_context),
+      player_(player), torrent_service_(torrent_service),
+      controls_last_hover_(std::chrono::steady_clock::now()) {
+  initialize_ids();
+}
+
+void PlayerOverlay::open() {
+  controls_visible_ = true;
+  controls_last_hover_ = std::chrono::steady_clock::now();
+}
+
+void PlayerOverlay::draw(RenderContext& render_context) {
+  if (!has_player_file()) {
+    return;
+  }
+
+  return_to_file_browser_after_eof();
+  if (!has_player_file()) {
+    return;
+  }
+
+  if (render_context.clay_context != nullptr) {
+    Clay_SetCurrentContext(render_context.clay_context);
+  }
+
+  const BasicGlApi& gl = render_context.gl_api;
+  gl.viewport(0, 0, render_context.metrics.pixel_width, render_context.metrics.pixel_height);
+  player_->render(render_context.metrics);
+
+  gl.viewport(0, 0, render_context.metrics.pixel_width, render_context.metrics.pixel_height);
+  gl.disable(GL_DEPTH_TEST);
+  gl.disable(GL_SCISSOR_TEST);
+
+  begin_frame();
+  build(render_context.metrics, player_->snapshot(), torrent_service_.snapshot(),
+        app_.is_fullscreen(), controls_visible());
+  update_controls_visibility(render_context.metrics);
+}
+
+bool PlayerOverlay::handle_event(const SDL_Event& event) {
+  switch (event.type) {
+  case SDL_EVENT_KEY_DOWN:
+    return key_down(event.key);
+  case SDL_EVENT_TEXT_INPUT:
+    text_input(event.text);
+    return cache_size_input_focused();
+  case SDL_EVENT_MOUSE_MOTION:
+    mouse_motion(event.motion);
+    return true;
+  case SDL_EVENT_MOUSE_BUTTON_DOWN:
+  case SDL_EVENT_MOUSE_BUTTON_UP:
+    mouse_button(event.button);
+    return true;
+  default:
+    break;
+  }
+  return false;
+}
+
+void PlayerOverlay::close() {
+  close_menus();
+  dragging_volume_ = false;
+  frame_strings_.clear();
+  audio_track_row_ids_.clear();
+}
+
 void PlayerOverlay::initialize_ids() {
-  root_id_ = Clay_GetElementId(CLAY_STRING("PlayerOverlayRoot"));
-  control_panel_id_ = Clay_GetElementId(CLAY_STRING("PlayerControlPanel"));
-  timeline_id_ = Clay_GetElementId(CLAY_STRING("PlayerTimeline"));
-  play_id_ = Clay_GetElementId(CLAY_STRING("PlayerPlay"));
-  seek_back_id_ = Clay_GetElementId(CLAY_STRING("PlayerSeekBack"));
-  seek_forward_id_ = Clay_GetElementId(CLAY_STRING("PlayerSeekForward"));
-  volume_bar_id_ = Clay_GetElementId(CLAY_STRING("PlayerVolumeBar"));
-  audio_button_id_ = Clay_GetElementId(CLAY_STRING("PlayerAudioButton"));
-  audio_menu_id_ = Clay_GetElementId(CLAY_STRING("PlayerAudioTrackMenu"));
-  buffer_button_id_ = Clay_GetElementId(CLAY_STRING("PlayerBufferButton"));
-  buffer_menu_id_ = Clay_GetElementId(CLAY_STRING("PlayerBufferMenu"));
-  buffer_input_id_ = Clay_GetElementId(CLAY_STRING("PlayerBufferInput"));
-  buffer_apply_id_ = Clay_GetElementId(CLAY_STRING("PlayerBufferApply"));
-  fullscreen_id_ = Clay_GetElementId(CLAY_STRING("PlayerFullscreen"));
-  stop_id_ = Clay_GetElementId(CLAY_STRING("PlayerStop"));
+  ids_initialized_ = true;
+  root_id_ = CLAY_ID("PlayerOverlayRoot");
+  control_panel_id_ = CLAY_ID("PlayerControlPanel");
+  timeline_id_ = CLAY_ID("PlayerTimeline");
+  play_id_ = CLAY_ID("PlayerPlay");
+  seek_back_id_ = CLAY_ID("PlayerSeekBack");
+  seek_forward_id_ = CLAY_ID("PlayerSeekForward");
+  volume_bar_id_ = CLAY_ID("PlayerVolumeBar");
+  audio_button_id_ = CLAY_ID("PlayerAudioButton");
+  audio_menu_id_ = CLAY_ID("PlayerAudioTrackMenu");
+  buffer_button_id_ = CLAY_ID("PlayerBufferButton");
+  buffer_menu_id_ = CLAY_ID("PlayerBufferMenu");
+  buffer_input_id_ = CLAY_ID("PlayerBufferInput");
+  buffer_apply_id_ = CLAY_ID("PlayerBufferApply");
+  fullscreen_id_ = CLAY_ID("PlayerFullscreen");
+  stop_id_ = CLAY_ID("PlayerStop");
 }
 
 void PlayerOverlay::begin_frame() {
@@ -206,15 +284,22 @@ std::string_view PlayerOverlay::retain_frame_text(std::string value) {
 void PlayerOverlay::text(std::string_view value, uint16_t font_size, Clay_Color color,
                          Clay_TextElementConfigWrapMode wrap) {
   const uint16_t scaled_size = scaled_font_size(font_size);
-  CLAY_TEXT(clay_string(value), CLAY_TEXT_CONFIG({.textColor = color,
-                                                  .fontSize = scaled_size,
-                                                  .lineHeight = static_cast<uint16_t>(std::lround(
-                                                      static_cast<float>(scaled_size) * 1.25F)),
-                                                  .wrapMode = wrap}));
+  CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
+                                      .height = CLAY_SIZING_FIT(0.0F)},
+                          .padding = text_padding,
+                          .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
+    CLAY_TEXT(clay_string(value),
+              CLAY_TEXT_CONFIG({.textColor = color,
+                                .fontSize = scaled_size,
+                                .lineHeight = static_cast<uint16_t>(
+                                    std::lround(static_cast<float>(scaled_size) * 1.25F)),
+                                .wrapMode = wrap}));
+  }
 }
 
 uint16_t PlayerOverlay::scaled_font_size(uint16_t font_size) const {
-  const float scale = static_cast<float>(std::clamp(font_size_, 9, 24)) / 13.0F;
+  const float scale = static_cast<float>(std::clamp(settings_.values().font_size, 9, 24)) /
+                      13.0F;
   return static_cast<uint16_t>(std::clamp<int>(static_cast<int>(std::lround(font_size * scale)), 8,
                                                32));
 }
@@ -512,7 +597,7 @@ void PlayerOverlay::build(const WindowMetrics& metrics, const PlaybackSnapshot& 
         CLAY(audio_button_id_,
              {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
                                     .height = CLAY_SIZING_FIT(0.0F)},
-                         .padding = {10, 10, 0, 0},
+                         .padding = {10, 10, 8, 8},
                          .childGap = 8,
                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
               .backgroundColor = show_audio_menu ? color_button_emphasis : color_button,
@@ -523,7 +608,7 @@ void PlayerOverlay::build(const WindowMetrics& metrics, const PlaybackSnapshot& 
         CLAY(buffer_button_id_,
              {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
                                     .height = CLAY_SIZING_FIT(0.0F)},
-                         .padding = {10, 10, 0, 0},
+                         .padding = {10, 10, 8, 8},
                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
               .backgroundColor = show_buffer_menu ? color_button_emphasis : color_button,
               .cornerRadius = CLAY_CORNER_RADIUS(6.0F)}) {
@@ -670,6 +755,268 @@ PlayerOverlayAction PlayerOverlay::hit_test_click() {
 
   close_menus();
   return PlayerOverlayAction::none;
+}
+
+bool PlayerOverlay::key_down(const SDL_KeyboardEvent& key) {
+  if (key.repeat) {
+    return true;
+  }
+
+  const bool command = (key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
+
+  if (cache_size_input_focused()) {
+    if (command && key.key == SDLK_V) {
+      char* clipboard = SDL_GetClipboardText();
+      if (clipboard != nullptr) {
+        append_cache_size_text(clipboard);
+        SDL_free(clipboard);
+      }
+      return true;
+    }
+    if (key.key == SDLK_BACKSPACE) {
+      backspace_cache_size_text();
+      return true;
+    }
+    if (key.key == SDLK_RETURN || key.key == SDLK_KP_ENTER) {
+      commit_cache_size_text();
+      dispatch_action(PlayerOverlayAction::set_cache_size);
+      return true;
+    }
+    if (key.key == SDLK_ESCAPE) {
+      close_menus();
+      return true;
+    }
+  }
+
+  if (key.key == SDLK_ESCAPE) {
+    if (app_.is_fullscreen()) {
+      app_.toggle_fullscreen();
+    } else {
+      app_.request_quit();
+    }
+    return true;
+  }
+
+  if (!has_player_file()) {
+    return false;
+  }
+
+  switch (key.key) {
+  case SDLK_SPACE:
+    dispatch_action(PlayerOverlayAction::toggle_pause);
+    return true;
+  case SDLK_LEFT:
+    dispatch_action(PlayerOverlayAction::seek_back);
+    return true;
+  case SDLK_RIGHT:
+    dispatch_action(PlayerOverlayAction::seek_forward);
+    return true;
+  case SDLK_HOME:
+    player_->seek_absolute(0.0);
+    return true;
+  case SDLK_END:
+    player_->seek_absolute(player_->snapshot().duration);
+    return true;
+  case SDLK_PAGEUP:
+    player_->seek_relative(300.0);
+    return true;
+  case SDLK_PAGEDOWN:
+    player_->seek_relative(-300.0);
+    return true;
+  case SDLK_UP:
+    player_->adjust_volume(5.0);
+    return true;
+  case SDLK_DOWN:
+    player_->adjust_volume(-5.0);
+    return true;
+  case SDLK_A:
+    player_->select_audio_track_relative(1);
+    return true;
+  case SDLK_F:
+  case SDLK_F11:
+    dispatch_action(PlayerOverlayAction::fullscreen);
+    return true;
+  default:
+    break;
+  }
+  return false;
+}
+
+void PlayerOverlay::text_input(const SDL_TextInputEvent& text_event) {
+  if (text_event.text != nullptr && cache_size_input_focused()) {
+    append_cache_size_text(text_event.text);
+  }
+}
+
+void PlayerOverlay::mouse_motion(const SDL_MouseMotionEvent& motion) {
+  pointer_.x = motion.x;
+  pointer_.y = motion.y;
+  pointer_.buttons = motion.state;
+  if (dragging_volume_) {
+    update_volume_from_pointer();
+  }
+}
+
+void PlayerOverlay::mouse_button(const SDL_MouseButtonEvent& button) {
+  pointer_.x = button.x;
+  pointer_.y = button.y;
+
+  if (button.button != SDL_BUTTON_LEFT) {
+    if (button.down) {
+      pointer_.buttons |= SDL_BUTTON_MASK(button.button);
+    } else {
+      pointer_.buttons &= ~SDL_BUTTON_MASK(button.button);
+    }
+    return;
+  }
+
+  if (button.down) {
+    pointer_.buttons |= SDL_BUTTON_MASK(button.button);
+    if (clay_context_ != nullptr && has_player_file()) {
+      Clay_SetCurrentContext(clay_context_);
+      if (pointer_over_volume_bar()) {
+        dragging_volume_ = true;
+        update_volume_from_pointer();
+      }
+    }
+    return;
+  }
+
+  pointer_.buttons &= ~SDL_BUTTON_MASK(button.button);
+
+  if (dragging_volume_) {
+    update_volume_from_pointer();
+    dragging_volume_ = false;
+    return;
+  }
+
+  if (clay_context_ != nullptr) {
+    Clay_SetCurrentContext(clay_context_);
+  }
+
+  if (has_player_file() && controls_visible()) {
+    dispatch_action(hit_test_click());
+  }
+}
+
+void PlayerOverlay::dispatch_action(PlayerOverlayAction action) {
+  if (action == PlayerOverlayAction::none) {
+    return;
+  }
+
+  if (player_ == nullptr) {
+    return;
+  }
+
+  switch (action) {
+  case PlayerOverlayAction::toggle_pause:
+    player_->toggle_pause();
+    break;
+  case PlayerOverlayAction::seek_back:
+    player_->seek_relative(-10.0);
+    break;
+  case PlayerOverlayAction::seek_forward:
+    player_->seek_relative(30.0);
+    break;
+  case PlayerOverlayAction::seek_absolute:
+    player_->seek_absolute(selected_seek_seconds());
+    break;
+  case PlayerOverlayAction::set_volume:
+    update_volume_from_pointer();
+    break;
+  case PlayerOverlayAction::select_audio_track:
+    player_->select_audio_track(selected_audio_track_index());
+    break;
+  case PlayerOverlayAction::set_cache_size:
+    settings_.values().buffer_size_mib = selected_cache_size_mib();
+    settings_.replace(settings_.values());
+    settings_.save();
+    torrent_service_.set_cache_limit_mib(settings_.values().buffer_size_mib);
+    TORRVIEW_LOG_INFO("Cache limit set to " << settings_.values().buffer_size_mib << " MiB");
+    break;
+  case PlayerOverlayAction::fullscreen:
+    app_.toggle_fullscreen();
+    break;
+  case PlayerOverlayAction::stop:
+    player_->stop();
+    app_.update_window_title();
+    if (torrent_service_.snapshot().state != TorrentLoadState::idle) {
+      app_.navigate<FileBrowserPage>();
+    } else {
+      app_.navigate<TitlePage>();
+    }
+    break;
+  case PlayerOverlayAction::toggle_audio_menu:
+  case PlayerOverlayAction::toggle_buffer_menu:
+  case PlayerOverlayAction::focus_cache_size:
+  case PlayerOverlayAction::none:
+    break;
+  }
+}
+
+void PlayerOverlay::update_volume_from_pointer() {
+  if (player_ == nullptr) {
+    return;
+  }
+
+  player_->set_volume(volume_from_pointer(pointer_.x));
+}
+
+void PlayerOverlay::update_controls_visibility(const WindowMetrics& metrics) {
+  const auto now = std::chrono::steady_clock::now();
+  if (dragging_volume_) {
+    controls_visible_ = true;
+    controls_last_hover_ = now;
+    return;
+  }
+
+  const bool pointer_in_reveal_band =
+      pointer_.y >= static_cast<float>(metrics.logical_height) - controls_reveal_band;
+  if (!controls_visible_ && pointer_in_reveal_band) {
+    controls_visible_ = true;
+    controls_last_hover_ = now;
+    return;
+  }
+
+  if (!controls_visible_) {
+    return;
+  }
+
+  if (pointer_in_reveal_band || pointer_over_controls()) {
+    controls_last_hover_ = now;
+    return;
+  }
+
+  if (now - controls_last_hover_ >= controls_hide_delay) {
+    controls_visible_ = false;
+    close_menus();
+  }
+}
+
+void PlayerOverlay::return_to_file_browser_after_eof() {
+  if (player_ == nullptr) {
+    return;
+  }
+
+  const PlaybackSnapshot snapshot = player_->snapshot();
+  if (!snapshot.eof_reached || !snapshot.path.starts_with("torrview://")) {
+    return;
+  }
+
+  TORRVIEW_LOG_INFO("Torrent playback ended; returning to file browser");
+  player_->stop();
+  controls_visible_ = true;
+  close_menus();
+  app_.navigate<FileBrowserPage>();
+  app_.update_window_title();
+}
+
+bool PlayerOverlay::controls_visible() const {
+  return controls_visible_;
+}
+
+bool PlayerOverlay::has_player_file() const {
+  return player_ != nullptr && player_->has_file();
 }
 
 double PlayerOverlay::volume_from_pointer(float pointer_x) const {

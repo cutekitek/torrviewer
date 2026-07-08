@@ -27,6 +27,7 @@ torrview_sources = files(
   'memory_disk_io.cpp',
   'mpv_player.cpp',
   'sdl_event_manager.cpp',
+  'settings.cpp',
   'torrent_service.cpp',
   'ui/clay_renderer.cpp',
   'ui/file_browser_page.cpp',

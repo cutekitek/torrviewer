@@ -1,9 +1,13 @@
 #include "ui/settings_page.hpp"
 
+#include "../app.hpp"
+#include "ui/render_context.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <limits>
+#include <utility>
 
 namespace torrview::ui {
 namespace {
@@ -16,6 +20,7 @@ constexpr Clay_Color color_accent = {74.0F, 181.0F, 162.0F, 255.0F};
 constexpr Clay_Color color_text = {235.0F, 238.0F, 243.0F, 255.0F};
 constexpr Clay_Color color_muted = {166.0F, 174.0F, 186.0F, 255.0F};
 constexpr Clay_Color color_border = {198.0F, 203.0F, 214.0F, 255.0F};
+constexpr Clay_Padding text_padding = {4, 4, 4, 4};
 
 Clay_String clay_string(std::string_view value) {
   const std::size_t max_length = static_cast<std::size_t>(std::numeric_limits<int32_t>::max());
@@ -39,16 +44,22 @@ bool append_numeric(std::string& target, std::string_view value) {
 
 } // namespace
 
+SettingsPage::SettingsPage(Application& app, Settings& settings, MpvPlayer* player,
+                           TorrentService& torrent_service)
+    : app_(app), settings_(settings), player_(player), torrent_service_(torrent_service) {
+  initialize_ids();
+}
+
 void SettingsPage::initialize_ids() {
-  close_id_ = Clay_GetElementId(CLAY_STRING("SettingsClose"));
-  save_id_ = Clay_GetElementId(CLAY_STRING("SettingsSave"));
-  font_size_id_ = Clay_GetElementId(CLAY_STRING("SettingsFontSize"));
-  upload_speed_id_ = Clay_GetElementId(CLAY_STRING("SettingsUploadSpeed"));
-  max_connections_id_ = Clay_GetElementId(CLAY_STRING("SettingsMaxConnections"));
-  proxy_url_id_ = Clay_GetElementId(CLAY_STRING("SettingsProxyUrl"));
-  proxy_peer_id_ = Clay_GetElementId(CLAY_STRING("SettingsProxyPeer"));
-  proxy_tracker_id_ = Clay_GetElementId(CLAY_STRING("SettingsProxyTracker"));
-  proxy_dns_id_ = Clay_GetElementId(CLAY_STRING("SettingsProxyDns"));
+  close_id_ = CLAY_ID("SettingsClose");
+  save_id_ = CLAY_ID("SettingsSave");
+  font_size_id_ = CLAY_ID("SettingsFontSize");
+  upload_speed_id_ = CLAY_ID("SettingsUploadSpeed");
+  max_connections_id_ = CLAY_ID("SettingsMaxConnections");
+  proxy_url_id_ = CLAY_ID("SettingsProxyUrl");
+  proxy_peer_id_ = CLAY_ID("SettingsProxyPeer");
+  proxy_tracker_id_ = CLAY_ID("SettingsProxyTracker");
+  proxy_dns_id_ = CLAY_ID("SettingsProxyDns");
 }
 
 void SettingsPage::begin_frame() { frame_strings_.clear(); }
@@ -65,6 +76,67 @@ void SettingsPage::open(const AppSettings& settings) {
   proxy_dns_ = clamped.proxy_dns;
   focused_field_ = Field::none;
 }
+
+void SettingsPage::draw(RenderContext& render_context) {
+  begin_frame();
+  build(render_context.metrics);
+}
+
+bool SettingsPage::handle_event(const SDL_Event& event) {
+  switch (event.type) {
+  case SDL_EVENT_TEXT_INPUT:
+    if (event.text.text != nullptr) {
+      append_text(event.text.text);
+    }
+    return true;
+  case SDL_EVENT_KEY_DOWN: {
+    if (event.key.repeat) {
+      break;
+    }
+
+    const bool command = (event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
+    if (command && event.key.key == SDLK_V && has_focus()) {
+      char* clipboard = SDL_GetClipboardText();
+      if (clipboard != nullptr) {
+        append_text(clipboard);
+        SDL_free(clipboard);
+      }
+      break;
+    }
+
+    switch (event.key.key) {
+    case SDLK_ESCAPE:
+      return_to_main_page();
+      break;
+    case SDLK_BACKSPACE:
+      backspace();
+      break;
+    case SDLK_TAB:
+      focus_next();
+      break;
+    case SDLK_RETURN:
+    case SDLK_KP_ENTER:
+      save_settings();
+      break;
+    default:
+      break;
+    }
+    return true;
+  }
+  case SDL_EVENT_MOUSE_BUTTON_UP:
+    if (event.button.button == SDL_BUTTON_LEFT) {
+      Clay_SetPointerState({.x = event.button.x, .y = event.button.y}, false);
+      handle_click_action(hit_test_click());
+      return true;
+    }
+    break;
+  default:
+    break;
+  }
+  return false;
+}
+
+void SettingsPage::close() { focused_field_ = Field::none; }
 
 void SettingsPage::set_font_size(int font_size) {
   AppSettings settings;
@@ -90,11 +162,17 @@ float SettingsPage::line_height(uint16_t font_size) const {
 void SettingsPage::text(std::string_view value, uint16_t font_size, Clay_Color color,
                         Clay_TextElementConfigWrapMode wrap) {
   const uint16_t scaled_size = scaled_font_size(font_size);
-  CLAY_TEXT(clay_string(value), CLAY_TEXT_CONFIG({.textColor = color,
-                                                  .fontSize = scaled_size,
-                                                  .lineHeight = static_cast<uint16_t>(std::lround(
-                                                      static_cast<float>(scaled_size) * 1.25F)),
-                                                  .wrapMode = wrap}));
+  CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
+                                      .height = CLAY_SIZING_FIT(0.0F)},
+                          .padding = text_padding,
+                          .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
+    CLAY_TEXT(clay_string(value),
+              CLAY_TEXT_CONFIG({.textColor = color,
+                                .fontSize = scaled_size,
+                                .lineHeight = static_cast<uint16_t>(
+                                    std::lround(static_cast<float>(scaled_size) * 1.25F)),
+                                .wrapMode = wrap}));
+  }
 }
 
 void SettingsPage::input_row(std::string_view label, Clay_ElementId id, Field field,
@@ -270,6 +348,38 @@ SettingsPageAction SettingsPage::hit_test_click() {
 
   focused_field_ = Field::none;
   return SettingsPageAction::none;
+}
+
+void SettingsPage::handle_click_action(SettingsPageAction action) {
+  switch (action) {
+  case SettingsPageAction::save:
+    save_settings();
+    break;
+  case SettingsPageAction::close:
+    return_to_main_page();
+    break;
+  case SettingsPageAction::none:
+    break;
+  }
+}
+
+void SettingsPage::save_settings() {
+  AppSettings next = settings_.values();
+  write_settings(next);
+  settings_.replace(std::move(next));
+  settings_.save();
+  app_.apply_settings();
+  return_to_main_page();
+}
+
+void SettingsPage::return_to_main_page() {
+  if (player_ != nullptr && player_->has_file()) {
+    app_.navigate<PlayerOverlay>();
+  } else if (torrent_service_.snapshot().state != TorrentLoadState::idle) {
+    app_.navigate<FileBrowserPage>();
+  } else {
+    app_.navigate<TitlePage>();
+  }
 }
 
 void SettingsPage::append_text(std::string_view value) {

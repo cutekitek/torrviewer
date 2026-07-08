@@ -1,5 +1,8 @@
 #include "ui/title_page.hpp"
 
+#include "../app.hpp"
+#include "ui/render_context.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -11,6 +14,7 @@ constexpr Clay_Color color_background = {12.0F, 13.0F, 15.0F, 255.0F};
 constexpr Clay_Color color_text = {233.0F, 236.0F, 241.0F, 255.0F};
 constexpr Clay_Color color_accent = {74.0F, 181.0F, 162.0F, 255.0F};
 constexpr Clay_Color color_error = {214.0F, 94.0F, 82.0F, 255.0F};
+constexpr Clay_Padding text_padding = {4, 4, 4, 4};
 
 Clay_String clay_string(std::string_view value) {
   const std::size_t max_length = static_cast<std::size_t>(std::numeric_limits<int32_t>::max());
@@ -22,9 +26,38 @@ Clay_String clay_string(std::string_view value) {
 
 } // namespace
 
+TitlePage::TitlePage(Application& app, Settings& settings, const bool& drag_active,
+                     const std::optional<ParsedInput>& last_input)
+    : app_(app), settings_(settings), drag_active_(drag_active), last_input_(last_input) {
+  initialize_ids();
+}
+
+void TitlePage::open() {}
+
+void TitlePage::draw(RenderContext& render_context) {
+  begin_frame();
+  build(render_context.metrics, drag_active_, last_input_);
+}
+
+bool TitlePage::handle_event(const SDL_Event& event) {
+  if (event.type != SDL_EVENT_MOUSE_BUTTON_UP || event.button.button != SDL_BUTTON_LEFT) {
+    return false;
+  }
+
+  Clay_SetPointerState({.x = event.button.x, .y = event.button.y}, false);
+  if (Clay_PointerOver(settings_id_)) {
+    app_.navigate<SettingsPage>(settings_.values());
+  } else if (Clay_PointerOver(source_panel_id_)) {
+    app_.show_source_dialog();
+  }
+  return true;
+}
+
+void TitlePage::close() {}
+
 void TitlePage::initialize_ids() {
-  source_panel_id_ = Clay_GetElementId(CLAY_STRING("SourcePanel"));
-  settings_id_ = Clay_GetElementId(CLAY_STRING("TitleSettings"));
+  source_panel_id_ = CLAY_ID("SourcePanel");
+  settings_id_ = CLAY_ID("TitleSettings");
 }
 
 Clay_ElementId TitlePage::source_panel_id() const { return source_panel_id_; }
@@ -54,15 +87,22 @@ std::string_view TitlePage::retain_frame_text(std::string value) {
 void TitlePage::text(std::string_view value, uint16_t font_size, Clay_Color color,
                      Clay_TextElementConfigWrapMode wrap) {
   const uint16_t scaled_size = scaled_font_size(font_size);
-  CLAY_TEXT(clay_string(value), CLAY_TEXT_CONFIG({.textColor = color,
-                                                  .fontSize = scaled_size,
-                                                  .lineHeight = static_cast<uint16_t>(std::lround(
-                                                      static_cast<float>(scaled_size) * 1.25F)),
-                                                  .wrapMode = wrap}));
+  CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
+                                      .height = CLAY_SIZING_FIT(0.0F)},
+                          .padding = text_padding,
+                          .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
+    CLAY_TEXT(clay_string(value),
+              CLAY_TEXT_CONFIG({.textColor = color,
+                                .fontSize = scaled_size,
+                                .lineHeight = static_cast<uint16_t>(
+                                    std::lround(static_cast<float>(scaled_size) * 1.25F)),
+                                .wrapMode = wrap}));
+  }
 }
 
 uint16_t TitlePage::scaled_font_size(uint16_t font_size) const {
-  const float scale = static_cast<float>(std::clamp(font_size_, 9, 24)) / 13.0F;
+  const float scale =
+      static_cast<float>(std::clamp(settings_.values().font_size, 9, 24)) / 13.0F;
   return static_cast<uint16_t>(std::clamp<int>(static_cast<int>(std::lround(font_size * scale)), 8,
                                                32));
 }
@@ -96,7 +136,7 @@ void TitlePage::build(const WindowMetrics& metrics, bool drag_active,
           .backgroundColor = {24.0F, 27.0F, 31.0F, 255.0F},
           .cornerRadius = CLAY_CORNER_RADIUS(6.0F),
           .floating = {.offset = {-18.0F, 18.0F},
-                       .parentId = Clay_GetElementId(CLAY_STRING("TitleRoot")).id,
+                       .parentId = CLAY_ID("TitleRoot").id,
                        .zIndex = 10,
                        .attachPoints = {.element = CLAY_ATTACH_POINT_RIGHT_TOP,
                                         .parent = CLAY_ATTACH_POINT_RIGHT_TOP},
@@ -110,7 +150,7 @@ void TitlePage::build(const WindowMetrics& metrics, bool drag_active,
     CLAY(source_panel_id_,
          {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F, content_width),
                                 .height = CLAY_SIZING_FIT(0.0F)},
-                     .padding = {24, 24, 0, 0},
+                     .padding = {24, 24, 24, 24},
                      .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
           .backgroundColor = color_background,
           .cornerRadius = CLAY_CORNER_RADIUS(10.0F),

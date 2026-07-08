@@ -5,7 +5,9 @@
 #include "input_source.hpp"
 #include "mpv_player.hpp"
 #include "sdl_event_manager.hpp"
+#include "settings.hpp"
 #include "torrent_service.hpp"
+#include "ui/app.hpp"
 #include "ui/clay_renderer.hpp"
 #include "ui/file_browser_page.hpp"
 #include "ui/player_overlay.hpp"
@@ -18,11 +20,11 @@
 #include <SDL3/SDL.h>
 
 #include <chrono>
-#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace torrview {
@@ -37,10 +39,20 @@ public:
   void initialize();
   void run();
 
+  template <typename PageClass, typename... Args> PageClass& navigate(Args&&... args) {
+    return ui_app_.open<PageClass>(std::forward<Args>(args)...);
+  }
+
+  void show_source_dialog();
+  void apply_settings();
+  void update_window_title();
+  void request_quit();
+  void toggle_fullscreen();
+  bool is_fullscreen() const;
+
 private:
   using Clock = std::chrono::steady_clock;
 
-  void request_quit() override;
   void window_metrics_changed() override;
   void key_down(const SDL_KeyboardEvent& key) override;
   void text_input(const SDL_TextInputEvent& text) override;
@@ -59,40 +71,20 @@ private:
   void initialize_text_renderer();
   void destroy_text_renderer();
   void initialize_clay();
-  void show_open_source_dialog();
-  void open_settings();
-  void save_settings_page();
-  void apply_settings();
+  void register_pages();
   TorrentRuntimeSettings runtime_settings_from_app_settings() const;
+  void accept_input(ParsedInput input);
   void paste_clipboard();
   void consume_dialog_results();
-  void accept_input(ParsedInput input);
-  void handle_file_browser_click();
-  void handle_settings_click();
-  void handle_player_click();
-  void handle_player_action(ui::PlayerOverlayAction action);
-  void update_volume_from_pointer();
-  void update_player_controls_visibility(Clock::time_point now);
-  void return_to_torrent_file_browser_after_eof();
-  void toggle_fullscreen();
-  bool is_fullscreen() const;
   void update_window_metrics();
-  void update_window_title();
-  void render();
-  void render_file_browser_screen(float delta_time);
-  void render_settings_screen(float delta_time);
-  void render_title_screen(float delta_time);
-  void render_player_screen(float delta_time);
+  void draw();
   void log_startup() const;
 
   bool running_ = false;
   bool sdl_initialized_ = false;
   bool drag_active_ = false;
-  bool dragging_volume_ = false;
-  bool player_controls_visible_ = true;
   bool thorvg_initialized_ = false;
-  bool settings_open_ = false;
-  int cache_limit_mib_ = 256;
+  float current_delta_time_ = 0.0F;
   SDL_Window* window_ = nullptr;
   SDL_GLContext context_ = nullptr;
   const char* font_name_ = "TorrviewNotoSans";
@@ -103,20 +95,13 @@ private:
   Clay_Context* clay_context_ = nullptr;
   ui::TextMeasureState text_measure_state_;
   Clock::time_point last_frame_time_;
-  Clock::time_point player_controls_last_hover_;
   std::unique_ptr<ui::ClayRenderer> clay_renderer_;
   std::unique_ptr<MpvPlayer> player_;
   TorrentService torrent_service_;
-  ui::TitlePage title_page_;
-  ui::FileBrowserPage file_browser_page_;
-  ui::PlayerOverlay player_overlay_;
-  ui::SettingsPage settings_page_;
+  ui::App ui_app_;
   SdlEventManager event_manager_;
   std::vector<char> clay_memory_;
-  AppSettings settings_;
-  std::filesystem::path settings_path_;
   std::optional<ParsedInput> last_input_;
-  std::optional<int> selected_torrent_file_index_;
 };
 
 } // namespace torrview

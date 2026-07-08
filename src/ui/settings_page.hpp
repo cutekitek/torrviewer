@@ -1,6 +1,10 @@
 #pragma once
 
 #include "app_settings.hpp"
+#include "mpv_player.hpp"
+#include "settings.hpp"
+#include "torrent_service.hpp"
+#include "ui/page.hpp"
 #include "window_state.hpp"
 
 #include "clay.h"
@@ -10,19 +14,27 @@
 #include <string_view>
 #include <vector>
 
-namespace torrview::ui {
+namespace torrview {
+class Application;
+}
 
+namespace torrview::ui {
 enum class SettingsPageAction {
   none,
   close,
   save,
 };
 
-class SettingsPage {
+class SettingsPage : public Page {
 public:
+  SettingsPage(Application& app, Settings& settings, MpvPlayer* player,
+               TorrentService& torrent_service);
   void initialize_ids();
   void begin_frame();
   void open(const AppSettings& settings);
+  void draw(RenderContext& render_context) override;
+  bool handle_event(const SDL_Event& event) override;
+  void close() override;
   void set_font_size(int font_size);
   void build(const WindowMetrics& metrics);
   SettingsPageAction hit_test_click();
@@ -47,10 +59,17 @@ private:
   void input_row(std::string_view label, Clay_ElementId id, Field field,
                  std::string_view value, std::string_view suffix = {});
   void toggle_row(std::string_view label, Clay_ElementId id, bool value);
+  void handle_click_action(SettingsPageAction action);
+  void save_settings();
+  void return_to_main_page();
   [[nodiscard]] uint16_t scaled_font_size(uint16_t font_size) const;
   [[nodiscard]] float line_height(uint16_t font_size) const;
   [[nodiscard]] int int_field(std::string_view value, int fallback) const;
 
+  Application& app_;
+  Settings& settings_;
+  MpvPlayer* player_ = nullptr;
+  TorrentService& torrent_service_;
   Clay_ElementId close_id_ = {};
   Clay_ElementId save_id_ = {};
   Clay_ElementId font_size_id_ = {};
