@@ -272,6 +272,12 @@ lt::settings_pack make_session_settings(const TorrentRuntimeSettings& runtime) {
   settings.set_bool(lt::settings_pack::enable_lsd, true);
   settings.set_bool(lt::settings_pack::enable_upnp, true);
   settings.set_bool(lt::settings_pack::enable_natpmp, true);
+  // A bounded stream repeatedly looks "finished" to libtorrent whenever every piece in the
+  // current memory window is present. Keep those now-redundant peer connections warm so advancing
+  // the window does not have to rebuild the swarm and ramp TCP throughput up from scratch.
+  settings.set_bool(lt::settings_pack::close_redundant_connections, false);
+  settings.set_int(lt::settings_pack::inactivity_timeout, 60 * 60);
+  settings.set_int(lt::settings_pack::min_reconnect_time, 10);
   apply_runtime_settings(settings, runtime);
   settings.set_int(lt::settings_pack::alert_mask,
                    lt::alert_category::error | lt::alert_category::status |
