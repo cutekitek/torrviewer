@@ -1,38 +1,61 @@
 # Windows Static Build
 
-This project has a Windows-only static profile that builds a custom size-optimized FFmpeg first, then builds bundled static `libmpv`, `libtorrent-rasterbar`, and ThorVG through Meson subprojects. The final executable is stripped and compressed with UPX by default.
-
-The intended toolchain is MSYS2 MinGW UCRT64. From PowerShell:
-
-```powershell
-.\scripts\build-windows-static.ps1
-```
-
-Or from an MSYS2 UCRT64 shell:
+The Windows static profile is configured and built directly with Meson. Run all
+commands from the **MSYS2 UCRT64** shell, not the plain MSYS shell or
+PowerShell. Verify the shell before configuring:
 
 ```sh
-./scripts/build-windows-static-msys2.sh
+test "$MSYSTEM" = UCRT64
+command -v meson gcc g++
 ```
 
-The FFmpeg build is intentionally decode-only and uses FFmpeg's `--enable-small` option by default. It keeps the libraries mpv requires (`avcodec`, `avformat`, `avfilter`, `avutil`, `swresample`, `swscale`) and enables common media demuxers/decoders for MKV, MP4/MOV, WebM, AVI, MPEG-TS/PS, FLV, Ogg, MP3, AAC, FLAC, H.264, HEVC, MPEG video, VP8/VP9, AV1, common Windows Media codecs, and common audio codecs. It also enables Windows D3D11VA/DXVA2 hardware decode paths for common GPU-decodable video formats. It disables FFmpeg programs, devices, network protocols, encoders, muxers, and documentation.
+All three commands must succeed. An empty compiler error during `meson setup`
+usually means the UCRT64 toolchain was launched with an incomplete `PATH`.
 
-The bundled libplacebo build enables its OpenGL backend for GPU rendering support while keeping Vulkan and D3D11 disabled to avoid extra shader compiler and loader dependencies in the static package. The embedded libmpv build enables Windows D3D hardware decoding, and the app requests mpv's `hwdec=auto-safe` mode at runtime on Windows.
+Initialize the Clay and libplacebo submodules before the first build:
 
-Override the FFmpeg revision with:
-
-```powershell
-$env:FFMPEG_REF = "n7.1.1"
-.\scripts\build-windows-static.ps1
+```sh
+git submodule update --init --recursive
 ```
 
-The size optimizations can be disabled for troubleshooting:
+Meson builds FFmpeg, libplacebo, libmpv, libtorrent-rasterbar, and ThorVG as
+static subprojects. FFmpeg is a decode-only, no-network build containing the
+formats and codecs used by the application. Libplacebo contains only its
+OpenGL backend. The `prod` target makes the complete application dependency
+set mandatory even with `-Dauto_features=disabled`. No external
+FFmpeg/libplacebo prefix is required.
 
-```powershell
-$env:FFMPEG_ENABLE_SMALL = "0"
-$env:ENABLE_UPX = "0"
-.\scripts\build-windows-static.ps1
+Configure and build the O2-optimized executable:
+
+```sh
+meson setup build-prod -Dbuild_target=prod
+
+meson compile -C build-prod prod
 ```
 
-The script prints imported DLLs for `torrview.exe` after the build. A fully static MinGW build should only list Windows system DLLs such as `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `OPENGL32.dll`, and similar OS libraries.
+The production defaults—including O2 optimization, stripping, static libraries,
+static preference, disabled dependency autodetection, non-PIC static objects,
+and FFmpeg's required PIC exception—are defined in the project Meson files.
 
-`torrview.exe` is built as a Windows GUI application, so launching the production executable does not open a separate command window. Use the separate Windows development build for a fast console target.
+The static profile compiles functions and data into separate sections and
+garbage-collects unused sections at link time. LTO is intentionally left off:
+GCC 16.1 for MinGW currently crashes while linking this dependency graph. It
+can be tested with `-Db_lto=true` on another compiler version.
+
+If the build directory was already configured with another compiler or
+dependency source, remove its cached configuration and repeat the full setup
+command above:
+
+```sh
+meson setup --wipe build-prod
+```
+
+The remaining profile options are preserved by `--wipe`.
+
+The executable is written to `build-prod/src/prod.exe`. It is a
+Windows GUI application, so it does not open a console window.
+
+After the initial setup, `meson compile` automatically regenerates the build
+files when Meson inputs change. Use `meson configure build-prod` to
+view or change options, and use `meson setup --wipe build-prod` when
+switching compilers or dependency sources.

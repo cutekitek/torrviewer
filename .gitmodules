@@ -1,3 +1,7 @@
 [submodule "third_party/clay"]
 	path = third_party/clay
 	url = https://github.com/nicbarker/clay.git
+[submodule "subprojects/libplacebo"]
+	path = subprojects/libplacebo
+	url = https://code.videolan.org/videolan/libplacebo.git
+	shallow = true

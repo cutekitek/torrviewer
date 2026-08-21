@@ -1,25 +1,42 @@
 # Windows Development Build
 
-Use this profile for fast Windows development and testing. It uses dynamic MSYS2 system packages, disables static packaging, and refuses Meson subproject fallbacks so it does not spend time building bundled media dependencies.
+Use an MSYS2 MinGW shell, preferably UCRT64, with Meson, Ninja, a C++ compiler,
+pkg-config, SDL3, and the optional application dependencies installed.
 
-From PowerShell:
-
-```powershell
-.\scripts\build-windows-dev.ps1
-```
-
-Or from an MSYS2 UCRT64 shell:
+Configure the development build directly with Meson:
 
 ```sh
-./scripts/build-windows-dev-msys2.sh
+meson setup build-dev \
+  --buildtype=debugoptimized \
+  --default-library=shared \
+  --wrap-mode=nofallback \
+  -Dstrip=false \
+  -Dprefer_static=false \
+  -Dauto_features=auto \
+  -Db_staticpic=true \
+  -Db_ndebug=false \
+  -Dbuild_target=dev \
+  -Dmpv=auto \
+  -Dsystem_mpv=true \
+  -Dlibtorrent=auto \
+  -Dsystem_libtorrent=true \
+  -Dthorvg=auto \
+  -Dfreetype=auto \
+  -Dfontconfig=auto
 ```
 
-The default output is:
+Build and run the console application with Meson:
 
-```text
-build-windows-dev/src/torrview-dev.exe
+```sh
+meson compile -C build-dev dev
+meson compile -C build-dev run-dev
 ```
 
-Run `torrview-dev.exe` from an MSYS2 shell, or make sure the matching MSYS2 `bin` directory is on `PATH`, so its runtime DLLs can be found.
+After the initial setup, `meson compile` automatically regenerates the build
+files when Meson inputs change. Use `meson configure build-dev` to view
+or change options.
 
-`torrview-dev.exe` is a Windows console application, so logs stay visible while developing and testing. The normal `torrview.exe` target remains the production GUI application and does not open a command window.
+The executable is written to
+`build-dev/src/dev.exe`. Run it from the same MSYS2 shell so the matching
+runtime DLLs are available. It is a console application so development logs
+remain visible.

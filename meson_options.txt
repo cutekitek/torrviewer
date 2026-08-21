@@ -1,11 +1,17 @@
 option('mpv', type: 'feature', value: 'enabled', description: 'Discover libmpv or build it from the mpv Meson subproject fallback')
-option('system_mpv', type: 'boolean', value: true, description: 'Prefer an installed system libmpv before the mpv subproject fallback')
-option('libtorrent', type: 'feature', value: 'auto', description: 'Discover libtorrent-rasterbar or build it from the Meson/CMake subproject fallback')
-option('system_libtorrent', type: 'boolean', value: true, description: 'Prefer an installed system libtorrent-rasterbar before the subproject fallback')
-option('freetype', type: 'feature', value: 'auto', description: 'Discover and link FreeType when available')
-option('fontconfig', type: 'feature', value: 'auto', description: 'Discover and link Fontconfig when available')
+option('system_mpv', type: 'boolean', value: false, description: 'Prefer an installed system libmpv before the mpv subproject fallback')
+option('libtorrent', type: 'feature', value: 'enabled', description: 'Discover libtorrent-rasterbar or build it from the Meson/CMake subproject fallback')
+option('system_libtorrent', type: 'boolean', value: false, description: 'Prefer an installed system libtorrent-rasterbar before the subproject fallback')
+option('freetype', type: 'feature', value: 'enabled', description: 'Discover and link FreeType when available')
+option('fontconfig', type: 'feature', value: 'enabled', description: 'Discover and link Fontconfig when available')
 option('thorvg', type: 'feature', value: 'enabled', description: 'Build and link ThorVG from subprojects for UI text rendering')
-option('windows_static', type: 'boolean', value: false, description: 'Build a Windows-only static executable with bundled media dependencies')
-option('tracy', type: 'feature', value: 'disabled', description: 'Build with the Tracy profiler client')
-option('tracy_allocations', type: 'boolean', value: true, description: 'When Tracy is enabled, report global C++ new/delete allocations to Tracy')
+option(
+  'build_target',
+  type: 'combo',
+  choices: ['dev', 'prod'],
+  value: 'dev',
+  description: 'Build the development or production executable target',
+)
+option('tracy', type: 'feature', value: 'disabled', description: 'Build with the optional Tracy instrumentation client')
+option('tracy_allocations', type: 'boolean', value: false, description: 'Report global C++ new/delete allocations to Tracy; incompatible with ThorVG global allocation hooks')
 option('tracy_allocation_callstack_depth', type: 'integer', min: 0, max: 128, value: 16, description: 'Call stack depth used for Tracy allocation events')

@@ -1,0 +1,1 @@
+meson setup build-prod --buildtype=minsize --strip  --default-library=static --prefer-static  -Dauto_features=disabled -Db_staticpic=false -Dffmpeg:b_staticpic=true -Dbuild_target=prod -Dsystem_mpv=false -Dsystem_libtorrent=false

@@ -1,0 +1,8 @@
+[wrap-git]
+url = https://gitlab.freedesktop.org/gstreamer/meson-ports/ffmpeg.git
+revision = ff59522f2ef9058d67925373982c7b674a0f1fe9
+depth = 1
+diff_files = ffmpeg-meson-1.11.patch
+
+[provide]
+dependency_names = libavcodec, libavfilter, libavformat, libavutil, libswresample, libswscale

@@ -1,5 +1,6 @@
 project(
   'torrview',
+  'c',
   'cpp',
   version: '0.1.0',
   license: 'MIT',
@@ -7,13 +8,25 @@ project(
     'cpp_std=c++20',
     'warning_level=3',
     'werror=false',
+    'buildtype=debugoptimized',
+    'strip=true',
+    'default_library=static',
+    'prefer_static=true',
+    'auto_features=disabled',
+    'b_staticpic=false',
+    'b_ndebug=true',
   ],
 )
 
 fs = import('fs')
+c = meson.get_compiler('c')
 cpp = meson.get_compiler('cpp')
-windows_static = get_option('windows_static')
-static_linkage = windows_static
+host_platform = host_machine.system()
+build_target = get_option('build_target')
+static_build = build_target == 'prod'
+static_linkage = static_build
+gcc16_static_cpp_workaround = static_build and host_platform == 'windows' \
+  and cpp.get_id() == 'gcc' and cpp.version().version_compare('>=16')
 
 add_project_arguments(
   cpp.get_supported_arguments([
@@ -25,19 +38,40 @@ add_project_arguments(
   language: 'cpp',
 )
 
-if windows_static and host_machine.system() != 'windows'
-  error('windows_static=true is only supported for Windows targets')
-endif
-
-if windows_static
+if static_build
+  add_global_arguments(
+    c.get_supported_arguments([
+      '-ffunction-sections',
+      '-fdata-sections',
+    ]),
+    language: 'c',
+  )
+  add_global_arguments(
+    cpp.get_supported_arguments([
+      '-ffunction-sections',
+      '-fdata-sections',
+    ]),
+    language: 'cpp',
+  )
   add_project_link_arguments(
     cpp.get_supported_link_arguments([
       '-static',
       '-static-libgcc',
       '-static-libstdc++',
+      '-Wl,--gc-sections',
+      '-Wl,--strip-all',
     ]),
     language: 'cpp',
   )
+
+  # MSYS2 GCC 16's static libstdc++ archive does not resolve the C++20
+  # std::string move-constructor instantiation with the PE/COFF linker.  The
+  # assertions mode disables that extern-template declaration, so the
+  # application emits a usable inline instantiation.  Keep this scoped to the
+  # affected production toolchain.
+  if gcc16_static_cpp_workaround
+    add_project_arguments('-D_GLIBCXX_ASSERTIONS', language: 'cpp')
+  endif
 endif
 
 if not fs.exists(meson.project_source_root() / 'third_party' / 'clay' / 'clay.h')
@@ -46,7 +80,7 @@ endif
 
 sdl3_dep = dependency('sdl3', static: static_linkage, required: true)
 
-if host_machine.system() == 'windows'
+if host_platform == 'windows'
   add_project_arguments('-DNOMINMAX', language: 'cpp')
   opengl_dep = cpp.find_library('opengl32', required: true)
 else
@@ -59,91 +93,233 @@ else
   endif
 endif
 
+if static_build
+  ffmpeg_options = [
+    'default_library=static',
+    'b_staticpic=true',
+    'optimization=2',
+    'b_ndebug=true',
+    'auto_features=disabled',
+    'programs=disabled',
+    'tests=disabled',
+    'network=disabled',
+    'devices=disabled',
+    'avdevice=disabled',
+    'muxers=disabled',
+    'encoders=disabled',
+    'demuxers=disabled',
+    'decoders=disabled',
+    'parsers=disabled',
+    'hwaccels=disabled',
+    'protocols=disabled',
+    'filters=disabled',
+    'avcodec=enabled',
+    'avfilter=enabled',
+    'avformat=enabled',
+    'avutil=enabled',
+    'swresample=enabled',
+    'swscale=enabled',
+    'zlib=enabled',
+  ]
+
+  if host_platform == 'windows'
+    ffmpeg_options += [
+      'd3d11va=enabled',
+      'dxva2=enabled',
+      'ole32=enabled',
+      'user32=enabled',
+    ]
+  endif
+
+  foreach demuxer : [
+    'matroska', 'mov', 'avi', 'mpegts', 'mpegps', 'mpegvideo', 'flv',
+    'ogg', 'wav', 'mp3', 'aac', 'flac',
+  ]
+    ffmpeg_options += [demuxer + '_demuxer=enabled']
+  endforeach
+
+  foreach parser : [
+    'aac', 'aac_latm', 'ac3', 'av1', 'h264', 'hevc', 'mpeg4video',
+    'mpegaudio', 'mpegvideo', 'opus', 'vorbis', 'vp8', 'vp9',
+  ]
+    ffmpeg_options += [parser + '_parser=enabled']
+  endforeach
+
+  foreach decoder : [
+    'aac', 'aac_latm', 'ac3', 'eac3', 'alac', 'flac', 'mp1', 'mp2', 'mp3',
+    'opus', 'vorbis', 'pcm_s16le', 'pcm_s24le', 'pcm_s32le', 'pcm_f32le',
+    'h264', 'hevc', 'mpeg1video', 'mpeg2video', 'mpeg4', 'msmpeg4v2',
+    'msmpeg4v3', 'h263', 'vc1', 'wmv1', 'wmv2', 'wmv3', 'vp8', 'vp9',
+    'av1', 'theora',
+  ]
+    ffmpeg_options += [decoder + '_decoder=enabled']
+  endforeach
+
+  if host_platform == 'windows'
+    foreach hwaccel : [
+      'av1_d3d11va', 'av1_d3d11va2', 'av1_dxva2',
+      'h264_d3d11va', 'h264_d3d11va2', 'h264_dxva2',
+      'hevc_d3d11va', 'hevc_d3d11va2', 'hevc_dxva2',
+      'mpeg2_d3d11va', 'mpeg2_d3d11va2', 'mpeg2_dxva2',
+      'vc1_d3d11va', 'vc1_d3d11va2', 'vc1_dxva2',
+      'vp9_d3d11va', 'vp9_d3d11va2', 'vp9_dxva2',
+      'wmv3_d3d11va', 'wmv3_d3d11va2', 'wmv3_dxva2',
+    ]
+      ffmpeg_options += [hwaccel + '_hwaccel=enabled']
+    endforeach
+  endif
+
+  foreach protocol : ['file', 'pipe']
+    ffmpeg_options += [protocol + '_protocol=enabled']
+  endforeach
+
+  # FFmpeg's buffer/abuffer sources and sinks are core filters in the Meson
+  # port, so they do not have individual feature options.
+  foreach filter : ['aformat', 'anull', 'aresample', 'format', 'null', 'scale']
+    ffmpeg_options += [filter + '_filter=enabled']
+  endforeach
+
+  subproject('ffmpeg', default_options: ffmpeg_options, required: true)
+
+  subproject(
+    'libplacebo',
+    default_options: [
+      'default_library=static',
+      'b_staticpic=false',
+      'optimization=2',
+      'b_ndebug=true',
+      'auto_features=disabled',
+      'vulkan=disabled',
+      'vk-proc-addr=disabled',
+      'opengl=enabled',
+      'gl-proc-addr=enabled',
+      'd3d11=disabled',
+      'glslang=disabled',
+      'shaderc=disabled',
+      'lcms=disabled',
+      'dovi=disabled',
+      'libdovi=disabled',
+      'demos=false',
+      'tests=false',
+      'bench=false',
+      'fuzz=false',
+      'unwind=disabled',
+      'xxhash=disabled',
+    ],
+    required: true,
+  )
+endif
+
 mpv_dep = dependency('', required: false)
-if get_option('mpv').allowed()
-  if get_option('system_mpv') and not windows_static
+mpv_requested = static_build or get_option('mpv').allowed()
+mpv_required = get_option('mpv')
+if static_build
+  mpv_required = true
+endif
+
+if mpv_requested
+  if get_option('system_mpv') and not static_build
     mpv_dep = dependency('mpv', static: static_linkage, required: false)
   endif
   if not mpv_dep.found()
-    mpv_proj = subproject(
-      'mpv',
-      default_options: [
-        'default_library=static',
-        'libmpv=true',
-        'cplayer=false',
-        'tests=false',
-        'fuzzers=false',
-        'build-date=false',
-        'html-build=disabled',
-        'manpage-build=disabled',
-        'pdf-build=disabled',
-        'caca=disabled',
-        'cdda=disabled',
-        'cplugins=disabled',
-        'dvbin=disabled',
-        'dvdnav=disabled',
-        'jpeg=disabled',
-        'lcms2=disabled',
-        'libarchive=disabled',
-        'lua=disabled',
-        'javascript=disabled',
-        'libbluray=disabled',
-        'libavdevice=disabled',
-        'rubberband=disabled',
-        'shaderc=disabled',
-        'spirv-cross=disabled',
-        'uchardet=disabled',
-        'vapoursynth=disabled',
-        'zimg=disabled',
-        'alsa=disabled',
-        'audiounit=disabled',
-        'avfoundation=disabled',
-        'coreaudio=disabled',
-        'jack=disabled',
-        'openal=disabled',
-        'audiotrack=disabled',
-        'aaudio=disabled',
-        'opensles=disabled',
-        'oss-audio=disabled',
-        'pipewire=disabled',
-        'pulse=disabled',
-        'sdl2-audio=disabled',
-        'sndio=disabled',
+    mpv_options = [
+      'default_library=static',
+      'b_staticpic=false',
+      'optimization=2',
+      'b_ndebug=true',
+      'auto_features=disabled',
+      'libmpv=true',
+      'cplayer=false',
+      'tests=false',
+      'fuzzers=false',
+      'build-date=false',
+      'html-build=disabled',
+      'manpage-build=disabled',
+      'pdf-build=disabled',
+      'caca=disabled',
+      'cdda=disabled',
+      'cplugins=disabled',
+      'dvbin=disabled',
+      'dvdnav=disabled',
+      'jpeg=disabled',
+      'lcms2=disabled',
+      'libarchive=disabled',
+      'lua=disabled',
+      'javascript=disabled',
+      'libbluray=disabled',
+      'libavdevice=disabled',
+      'rubberband=disabled',
+      'shaderc=disabled',
+      'spirv-cross=disabled',
+      'uchardet=disabled',
+      'vapoursynth=disabled',
+      'zimg=disabled',
+      'alsa=disabled',
+      'audiounit=disabled',
+      'avfoundation=disabled',
+      'coreaudio=disabled',
+      'jack=disabled',
+      'openal=disabled',
+      'audiotrack=disabled',
+      'aaudio=disabled',
+      'opensles=disabled',
+      'oss-audio=disabled',
+      'pipewire=disabled',
+      'pulse=disabled',
+      'sdl2-audio=disabled',
+      'sndio=disabled',
+      'wasapi=disabled',
+      'cocoa=disabled',
+      'd3d11=disabled',
+      'direct3d=disabled',
+      'dmabuf-wayland=disabled',
+      'drm=disabled',
+      'egl=disabled',
+      'egl-angle=disabled',
+      'egl-angle-lib=disabled',
+      'egl-angle-win32=disabled',
+      'gbm=disabled',
+      'gl=enabled',
+      'gl-cocoa=disabled',
+      'gl-dxinterop=disabled',
+      'gl-win32=disabled',
+      'gl-x11=disabled',
+      'plain-gl=enabled',
+      'sdl2-video=disabled',
+      'sixel=disabled',
+      'vaapi=disabled',
+      'vulkan=disabled',
+      'wayland=disabled',
+      'x11=disabled',
+      'xv=disabled',
+      'android-media-ndk=disabled',
+      'cuda-hwaccel=disabled',
+      'cuda-interop=disabled',
+      'd3d-hwaccel=disabled',
+      'd3d9-hwaccel=disabled',
+      'gl-dxinterop-d3d9=disabled',
+      'videotoolbox-gl=disabled',
+      'videotoolbox-pl=disabled',
+      'win32-smtc=disabled',
+    ]
+    if host_platform == 'windows'
+      mpv_options += [
         'wasapi=enabled',
-        'cocoa=disabled',
-        'd3d11=disabled',
-        'direct3d=disabled',
-        'dmabuf-wayland=disabled',
-        'drm=disabled',
-        'egl=disabled',
-        'egl-angle=disabled',
-        'egl-angle-lib=disabled',
-        'egl-angle-win32=disabled',
-        'gbm=disabled',
-        'gl=enabled',
-        'gl-cocoa=disabled',
-        'gl-dxinterop=disabled',
-        'gl-win32=disabled',
-        'gl-x11=disabled',
-        'plain-gl=enabled',
-        'sdl2-video=disabled',
-        'sixel=disabled',
-        'vaapi=disabled',
-        'vulkan=disabled',
-        'wayland=disabled',
-        'x11=disabled',
-        'xv=disabled',
-        'android-media-ndk=disabled',
-        'cuda-hwaccel=disabled',
-        'cuda-interop=disabled',
         'd3d-hwaccel=enabled',
         'd3d9-hwaccel=enabled',
-        'gl-dxinterop-d3d9=disabled',
-        'videotoolbox-gl=disabled',
-        'videotoolbox-pl=disabled',
-        'win32-smtc=disabled',
-      ],
-      required: get_option('mpv'),
+      ]
+    elif host_platform == 'linux'
+      mpv_options += ['alsa=enabled']
+    endif
+
+    if static_build and host_platform == 'windows'
+      mpv_options += ['win32-threads=enabled']
+    endif
+
+    mpv_proj = subproject(
+      'mpv',
+      default_options: mpv_options,
+      required: mpv_required,
     )
     if mpv_proj.found()
       mpv_dep = mpv_proj.get_variable('libmpv_dep')
@@ -152,8 +328,14 @@ if get_option('mpv').allowed()
 endif
 
 libtorrent_dep = dependency('', required: false)
-if get_option('libtorrent').allowed()
-  if get_option('system_libtorrent') and not windows_static
+libtorrent_requested = static_build or get_option('libtorrent').allowed()
+libtorrent_required = get_option('libtorrent')
+if static_build
+  libtorrent_required = true
+endif
+
+if libtorrent_requested
+  if get_option('system_libtorrent') and not static_build
     libtorrent_dep = dependency('libtorrent-rasterbar', static: static_linkage, required: false)
   endif
   if not libtorrent_dep.found()
@@ -171,16 +353,19 @@ if get_option('libtorrent').allowed()
       'extensions': true,
       'streaming': true,
     })
-    if windows_static
+    if static_build
       libtorrent_options.add_cmake_defines({
         'Boost_USE_STATIC_LIBS': true,
         'OPENSSL_USE_STATIC_LIBS': true,
       })
     endif
+    if gcc16_static_cpp_workaround
+      libtorrent_options.append_compile_args('cpp', '-D_GLIBCXX_ASSERTIONS')
+    endif
     libtorrent_proj = cmake.subproject(
       'libtorrent-rasterbar',
       options: libtorrent_options,
-      required: get_option('libtorrent'),
+      required: libtorrent_required,
     )
     if libtorrent_proj.found()
       libtorrent_dep = libtorrent_proj.dependency('torrent-rasterbar')
@@ -188,18 +373,34 @@ if get_option('libtorrent').allowed()
   endif
 endif
 
-freetype_dep = dependency('freetype2', static: static_linkage, required: get_option('freetype'))
-fontconfig_dep = dependency('fontconfig', static: static_linkage, required: get_option('fontconfig'))
+freetype_required = get_option('freetype')
+fontconfig_required = get_option('fontconfig')
+if static_build
+  freetype_required = true
+  fontconfig_required = true
+endif
+
+freetype_dep = dependency('freetype2', static: static_linkage, required: freetype_required)
+fontconfig_dep = dependency('fontconfig', static: static_linkage, required: fontconfig_required)
 
 thorvg_dep = dependency('', required: false)
-if not windows_static
+if not static_build
   thorvg_dep = dependency('thorvg-1', static: static_linkage, required: false)
 endif
-if not thorvg_dep.found() and get_option('thorvg').allowed()
+thorvg_requested = static_build or get_option('thorvg').allowed()
+thorvg_required = get_option('thorvg')
+if static_build
+  thorvg_required = true
+endif
+
+if not thorvg_dep.found() and thorvg_requested
   thorvg_proj = subproject(
     'thorvg',
     default_options: [
       'default_library=static',
+      'b_staticpic=false',
+      'optimization=2',
+      'b_ndebug=true',
       'engines=gl',
       'loaders=svg,ttf',
       'savers=',
@@ -212,7 +413,7 @@ if not thorvg_dep.found() and get_option('thorvg').allowed()
       'static=true',
       'file=true',
     ],
-    required: get_option('thorvg'),
+    required: thorvg_required,
   )
   if thorvg_proj.found()
     thorvg_dep = thorvg_proj.get_variable('thorvg_dep')
@@ -225,6 +426,9 @@ if get_option('tracy').allowed()
     'tracy',
     default_options: [
       'default_library=static',
+      'b_staticpic=false',
+      'optimization=2',
+      'b_ndebug=true',
       'cpp_std=c++20',
       'tracy_enable=true',
       'callstack=' + get_option('tracy_allocation_callstack_depth').to_string(),
@@ -236,7 +440,7 @@ if get_option('tracy').allowed()
   endif
 endif
 
-if tracy_dep.found() and host_machine.system() == 'windows'
+if tracy_dep.found() and host_platform == 'windows'
   tracy_dep = declare_dependency(
     dependencies: [
       tracy_dep,
@@ -299,30 +503,8 @@ config_inc = include_directories('.')
 
 subdir('src')
 
-if libtorrent_dep.found()
-  memory_disk_io_test = executable(
-    'memory_disk_io_test',
-    files('tests/memory_disk_io_test.cpp', 'src/cache_policy.cpp', 'src/memory_disk_io.cpp'),
-    dependencies: libtorrent_dep,
-    include_directories: [config_inc, include_directories('src')],
-  )
-  test('memory_disk_io', memory_disk_io_test)
-
-  torrent_stream_probe = executable(
-    'torrent_stream_probe',
-    files(
-      'tests/torrent_stream_probe.cpp',
-      'src/cache_policy.cpp',
-      'src/logger.cpp',
-      'src/memory_disk_io.cpp',
-    ),
-    dependencies: libtorrent_dep,
-    include_directories: [config_inc, include_directories('src')],
-  )
-  test('torrent_stream_probe_skip_without_input', torrent_stream_probe)
-endif
-
 summary({
+  'Build target': build_target,
   'SDL3': sdl3_dep.found(),
   'OpenGL': opengl_dep.found(),
   'Clay': true,

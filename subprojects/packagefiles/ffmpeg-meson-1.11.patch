@@ -1,0 +1,19 @@
+diff --git a/meson.build b/meson.build
+index 1a742408..45bf4ee4 100644
+--- a/meson.build
++++ b/meson.build
+@@ -870,6 +870,6 @@ conf.set10('pic', get_option('b_staticpic'))
+ 
+ sanitizers = get_option('b_sanitize')
+-if sanitizers != ''
++if sanitizers != '' and sanitizers != 'none'
+   # libswscale (<8.0) and libavcodec require PIC to build with *SAN
+   # upstream checks this only against GCC (for TSAN) and against non-windows
+   # (for fPIC/-DPIC, later)
+@@ -3643,5 +3643,5 @@ endif
+ foreach lib: autodetect_libs
+   if conf_requested.get(lib, 0) == 1 and conf.get(lib, 0) == 0
+-    error('@0@ requested but not found').format(lib)
++    error('@0@ requested but not found'.format(lib))
+   endif
+ endforeach

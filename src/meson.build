@@ -36,30 +36,20 @@ torrview_sources = files(
   'ui/title_page.cpp',
 )
 
-windows_host = host_machine.system() == 'windows'
-production_win_subsystem = windows_host ? 'windows' : 'console'
+windows_host = host_platform == 'windows'
+target_win_subsystem = windows_host and static_build ? 'windows' : 'console'
 torrview_app_sources = torrview_sources + packed_resources
 if tracy_dep.found() and get_option('tracy_allocations')
   torrview_app_sources += files('tracy_allocations.cpp')
 endif
 
-executable(
-  'torrview',
+torrview_app = executable(
+  build_target,
   torrview_app_sources,
   dependencies: torrview_deps,
   include_directories: config_inc,
-  win_subsystem: production_win_subsystem,
+  win_subsystem: target_win_subsystem,
   install: true,
 )
 
-if windows_host
-  executable(
-    'torrview-dev',
-    torrview_app_sources,
-    dependencies: torrview_deps,
-    include_directories: config_inc,
-    win_subsystem: 'console',
-    build_by_default: false,
-    install: false,
-  )
-endif
+run_target('run-' + build_target, command: torrview_app)

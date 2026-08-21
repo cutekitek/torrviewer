@@ -3,3 +3,8 @@ build-*/
 .cache/
 compile_commands.json
 *.torrent
+subprojects/libtorrent-rasterbar/
+subprojects/ffmpeg/
+subprojects/mpv/
+subprojects/thorvg/
+subprojects/tracy/
