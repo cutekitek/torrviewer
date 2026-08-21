@@ -30,6 +30,7 @@ enum class PlayerOverlayAction {
   set_volume,
   toggle_audio_menu,
   toggle_buffer_menu,
+  toggle_debug_overlay,
   focus_cache_size,
   select_audio_track,
   set_cache_size,
@@ -67,6 +68,11 @@ public:
   void close_menus();
 
 private:
+  struct BitrateSample {
+    double video_bps = 0.0;
+    double audio_bps = 0.0;
+  };
+
   enum class Icon {
     play,
     pause,
@@ -89,6 +95,10 @@ private:
   void cache_size_input(std::string_view value, bool focused);
   void piece_rail(const TorrentSnapshot& torrent, float width);
   void status_overlay(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent);
+  void debug_overlay(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent,
+                     float max_width);
+  void bitrate_graph(float width);
+  void update_bitrate_history(const PlaybackSnapshot& snapshot);
   bool key_down(const SDL_KeyboardEvent& key);
   void text_input(const SDL_TextInputEvent& text);
   void mouse_motion(const SDL_MouseMotionEvent& motion);
@@ -125,10 +135,12 @@ private:
   Clay_ElementId buffer_menu_id_ = {};
   Clay_ElementId buffer_input_id_ = {};
   Clay_ElementId buffer_apply_id_ = {};
+  Clay_ElementId debug_button_id_ = {};
   Clay_ElementId fullscreen_id_ = {};
   Clay_ElementId stop_id_ = {};
   bool audio_menu_open_ = false;
   bool buffer_menu_open_ = false;
+  bool debug_overlay_enabled_ = false;
   double last_duration_ = 0.0;
   double selected_seek_seconds_ = 0.0;
   std::size_t selected_audio_track_index_ = 0;
@@ -138,6 +150,9 @@ private:
   bool buffer_input_focused_ = false;
   std::string buffer_input_text_;
   std::vector<Clay_ElementId> audio_track_row_ids_;
+  std::deque<BitrateSample> bitrate_history_;
+  std::chrono::steady_clock::time_point last_bitrate_sample_;
+  std::string bitrate_history_path_;
   std::deque<std::string> frame_strings_;
 };
 

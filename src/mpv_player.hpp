@@ -18,6 +18,40 @@ struct AudioTrackInfo {
   std::string label;
 };
 
+struct VideoPlaybackMetadata {
+  std::string codec;
+  std::string codec_profile;
+  std::string decoder;
+  std::string pixel_format;
+  std::string hardware_pixel_format;
+  std::string color_matrix;
+  int width = 0;
+  int height = 0;
+  double fps = 0.0;
+  double bitrate_bps = 0.0;
+};
+
+struct AudioPlaybackMetadata {
+  std::string codec;
+  std::string codec_profile;
+  std::string decoder;
+  std::string sample_format;
+  std::string channels;
+  int sample_rate = 0;
+  int channel_count = 0;
+  double bitrate_bps = 0.0;
+};
+
+struct PlaybackDiagnostics {
+  std::string file_format;
+  std::string hardware_decoder;
+  double av_sync = 0.0;
+  std::int64_t dropped_frames = 0;
+  std::int64_t decoder_dropped_frames = 0;
+  VideoPlaybackMetadata video;
+  AudioPlaybackMetadata audio;
+};
+
 struct PlaybackSnapshot {
   bool available = false;
   bool initialized = false;
@@ -33,6 +67,7 @@ struct PlaybackSnapshot {
   int active_audio_index = -1;
   std::vector<int64_t> audio_track_ids;
   std::vector<AudioTrackInfo> audio_track_list;
+  PlaybackDiagnostics diagnostics;
   std::string media_title;
   std::string path;
   std::string status;
@@ -70,6 +105,8 @@ private:
   void observe_properties();
   void handle_property(const char* name, void* data, int format);
   void update_track_counts(void* node_data);
+  void update_video_params(void* node_data);
+  void update_audio_params(void* node_data);
   void register_torrent_stream_protocol();
   void command(const char** args);
   void set_status_from_error(const char* action, int code);

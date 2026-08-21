@@ -144,9 +144,30 @@ int64_t node_int64_or(const mpv_node& node, int64_t fallback) {
   return fallback;
 }
 
+int64_t node_int64_or(const mpv_node* node, int64_t fallback) {
+  return node != nullptr ? node_int64_or(*node, fallback) : fallback;
+}
+
 bool node_flag_or(const mpv_node& node, bool fallback) {
   if (node.format == MPV_FORMAT_FLAG) {
     return node.u.flag != 0;
+  }
+  return fallback;
+}
+
+bool node_flag_or(const mpv_node* node, bool fallback) {
+  return node != nullptr ? node_flag_or(*node, fallback) : fallback;
+}
+
+double node_double_or(const mpv_node* node, double fallback = 0.0) {
+  if (node == nullptr) {
+    return fallback;
+  }
+  if (node->format == MPV_FORMAT_DOUBLE) {
+    return node->u.double_;
+  }
+  if (node->format == MPV_FORMAT_INT64) {
+    return static_cast<double>(node->u.int64);
   }
   return fallback;
 }
@@ -157,6 +178,15 @@ std::string node_string_or(const mpv_node* node, std::string_view fallback = {})
   }
 
   return std::string(fallback);
+}
+
+void observe_optional_property(mpv_handle* handle, const char* name, mpv_format format) {
+  const int code = mpv_observe_property(handle, 0, name, format);
+  if (code < 0) {
+    TORRVIEW_LOG_WARNING("mpv diagnostic property unavailable: " << name << " ("
+                                                                    << mpv_error_string(code)
+                                                                    << ')');
+  }
 }
 #endif
 
@@ -261,6 +291,7 @@ void MpvPlayer::load_file(const std::string& path) {
   snapshot_.eof_reached = false;
   snapshot_.path = path;
   snapshot_.media_title.clear();
+  snapshot_.diagnostics = {};
   snapshot_.status = "Loading";
   int pause = 0;
   check_mpv(mpv_set_property(handle_, "pause", MPV_FORMAT_FLAG, &pause), "mpv unpause");
@@ -503,6 +534,7 @@ void MpvPlayer::stop() {
   snapshot_.duration = 0.0;
   snapshot_.path.clear();
   snapshot_.media_title.clear();
+  snapshot_.diagnostics = {};
   snapshot_.status = "Stopped";
 }
 
@@ -524,6 +556,17 @@ void MpvPlayer::observe_properties() {
             "observe media-title");
   check_mpv(mpv_observe_property(handle_, 0, "track-list", MPV_FORMAT_NODE),
             "observe track-list");
+  observe_optional_property(handle_, "file-format", MPV_FORMAT_STRING);
+  observe_optional_property(handle_, "video-params", MPV_FORMAT_NODE);
+  observe_optional_property(handle_, "audio-params", MPV_FORMAT_NODE);
+  observe_optional_property(handle_, "video-bitrate", MPV_FORMAT_DOUBLE);
+  observe_optional_property(handle_, "audio-bitrate", MPV_FORMAT_DOUBLE);
+  observe_optional_property(handle_, "container-fps", MPV_FORMAT_DOUBLE);
+  observe_optional_property(handle_, "estimated-vf-fps", MPV_FORMAT_DOUBLE);
+  observe_optional_property(handle_, "avsync", MPV_FORMAT_DOUBLE);
+  observe_optional_property(handle_, "frame-drop-count", MPV_FORMAT_INT64);
+  observe_optional_property(handle_, "decoder-frame-drop-count", MPV_FORMAT_INT64);
+  observe_optional_property(handle_, "hwdec-current", MPV_FORMAT_STRING);
 #endif
 }
 
@@ -549,6 +592,30 @@ void MpvPlayer::handle_property(const char* name, void* data, int format) {
     snapshot_.media_title = value != nullptr ? value : "";
   } else if (property == "track-list" && format == MPV_FORMAT_NODE) {
     update_track_counts(data);
+  } else if (property == "file-format" && format == MPV_FORMAT_STRING) {
+    snapshot_.diagnostics.file_format = static_cast<char*>(data);
+  } else if (property == "video-params" && format == MPV_FORMAT_NODE) {
+    update_video_params(data);
+  } else if (property == "audio-params" && format == MPV_FORMAT_NODE) {
+    update_audio_params(data);
+  } else if (property == "video-bitrate" && format == MPV_FORMAT_DOUBLE) {
+    snapshot_.diagnostics.video.bitrate_bps = *static_cast<double*>(data);
+  } else if (property == "audio-bitrate" && format == MPV_FORMAT_DOUBLE) {
+    snapshot_.diagnostics.audio.bitrate_bps = *static_cast<double*>(data);
+  } else if ((property == "container-fps" || property == "estimated-vf-fps") &&
+             format == MPV_FORMAT_DOUBLE) {
+    const double fps = *static_cast<double*>(data);
+    if (property == "estimated-vf-fps" || snapshot_.diagnostics.video.fps <= 0.0) {
+      snapshot_.diagnostics.video.fps = fps;
+    }
+  } else if (property == "avsync" && format == MPV_FORMAT_DOUBLE) {
+    snapshot_.diagnostics.av_sync = *static_cast<double*>(data);
+  } else if (property == "frame-drop-count" && format == MPV_FORMAT_INT64) {
+    snapshot_.diagnostics.dropped_frames = *static_cast<std::int64_t*>(data);
+  } else if (property == "decoder-frame-drop-count" && format == MPV_FORMAT_INT64) {
+    snapshot_.diagnostics.decoder_dropped_frames = *static_cast<std::int64_t*>(data);
+  } else if (property == "hwdec-current" && format == MPV_FORMAT_STRING) {
+    snapshot_.diagnostics.hardware_decoder = static_cast<char*>(data);
   }
 #else
   (void)name;
@@ -560,17 +627,27 @@ void MpvPlayer::handle_property(const char* name, void* data, int format) {
 void MpvPlayer::update_track_counts(void* node_data) {
 #if defined(TORRVIEW_HAVE_MPV)
   auto* node = static_cast<mpv_node*>(node_data);
+  VideoPlaybackMetadata& video = snapshot_.diagnostics.video;
+  AudioPlaybackMetadata& audio = snapshot_.diagnostics.audio;
   snapshot_.video_tracks = 0;
   snapshot_.audio_tracks = 0;
   snapshot_.subtitle_tracks = 0;
   snapshot_.active_audio_index = -1;
   snapshot_.audio_track_ids.clear();
   snapshot_.audio_track_list.clear();
+  video.codec.clear();
+  video.codec_profile.clear();
+  video.decoder.clear();
+  audio.codec.clear();
+  audio.codec_profile.clear();
+  audio.decoder.clear();
 
   if (node == nullptr || node->format != MPV_FORMAT_NODE_ARRAY || node->u.list == nullptr) {
     return;
   }
 
+  bool video_metadata_set = false;
+  bool audio_metadata_set = false;
   for (int index = 0; index < node->u.list->num; ++index) {
     const mpv_node& track = node->u.list->values[index];
     const mpv_node* type = map_lookup(track, "type");
@@ -580,6 +657,21 @@ void MpvPlayer::update_track_counts(void* node_data) {
 
     if (node_string_equals(*type, "video")) {
       ++snapshot_.video_tracks;
+      const bool selected = node_flag_or(map_lookup(track, "selected"), false);
+      if (!video_metadata_set || selected) {
+        video.codec = node_string_or(map_lookup(track, "codec"));
+        video.codec_profile = node_string_or(map_lookup(track, "codec-profile"));
+        video.decoder = node_string_or(map_lookup(track, "decoder"));
+        video.pixel_format = node_string_or(map_lookup(track, "format-name"), video.pixel_format);
+        video.width = static_cast<int>(
+            node_int64_or(map_lookup(track, "demux-w"), static_cast<int64_t>(video.width)));
+        video.height = static_cast<int>(
+            node_int64_or(map_lookup(track, "demux-h"), static_cast<int64_t>(video.height)));
+        video.fps = node_double_or(map_lookup(track, "demux-fps"), video.fps);
+        video.bitrate_bps =
+            node_double_or(map_lookup(track, "demux-bitrate"), video.bitrate_bps);
+        video_metadata_set = true;
+      }
     } else if (node_string_equals(*type, "audio")) {
       const mpv_node* id = map_lookup(track, "id");
       const mpv_node* selected = map_lookup(track, "selected");
@@ -606,6 +698,22 @@ void MpvPlayer::update_track_counts(void* node_data) {
       if (selected != nullptr && node_flag_or(*selected, false)) {
         snapshot_.active_audio_index = audio_index;
       }
+      const bool is_selected = selected != nullptr && node_flag_or(*selected, false);
+      if (!audio_metadata_set || is_selected) {
+        audio.codec = node_string_or(map_lookup(track, "codec"));
+        audio.codec_profile = node_string_or(map_lookup(track, "codec-profile"));
+        audio.decoder = node_string_or(map_lookup(track, "decoder"));
+        audio.sample_format =
+            node_string_or(map_lookup(track, "format-name"), audio.sample_format);
+        audio.channels = node_string_or(map_lookup(track, "demux-channels"), audio.channels);
+        audio.sample_rate = static_cast<int>(node_int64_or(
+            map_lookup(track, "demux-samplerate"), static_cast<int64_t>(audio.sample_rate)));
+        audio.channel_count = static_cast<int>(node_int64_or(
+            map_lookup(track, "demux-channel-count"), static_cast<int64_t>(audio.channel_count)));
+        audio.bitrate_bps =
+            node_double_or(map_lookup(track, "demux-bitrate"), audio.bitrate_bps);
+        audio_metadata_set = true;
+      }
     } else if (node_string_equals(*type, "sub")) {
       ++snapshot_.subtitle_tracks;
     }
@@ -613,6 +721,52 @@ void MpvPlayer::update_track_counts(void* node_data) {
 
   if (snapshot_.active_audio_index < 0 && snapshot_.audio_tracks > 0) {
     snapshot_.active_audio_index = 0;
+  }
+#else
+  (void)node_data;
+#endif
+}
+
+void MpvPlayer::update_video_params(void* node_data) {
+#if defined(TORRVIEW_HAVE_MPV)
+  auto* node = static_cast<mpv_node*>(node_data);
+  if (node == nullptr || node->format != MPV_FORMAT_NODE_MAP) {
+    return;
+  }
+
+  VideoPlaybackMetadata& video = snapshot_.diagnostics.video;
+  if (const mpv_node* width = map_lookup(*node, "w"); width != nullptr) {
+    video.width = static_cast<int>(node_int64_or(*width, video.width));
+  }
+  if (const mpv_node* height = map_lookup(*node, "h"); height != nullptr) {
+    video.height = static_cast<int>(node_int64_or(*height, video.height));
+  }
+  video.pixel_format = node_string_or(map_lookup(*node, "pixelformat"), video.pixel_format);
+  video.hardware_pixel_format =
+      node_string_or(map_lookup(*node, "hw-pixelformat"), video.hardware_pixel_format);
+  video.color_matrix = node_string_or(map_lookup(*node, "colormatrix"), video.color_matrix);
+#else
+  (void)node_data;
+#endif
+}
+
+void MpvPlayer::update_audio_params(void* node_data) {
+#if defined(TORRVIEW_HAVE_MPV)
+  auto* node = static_cast<mpv_node*>(node_data);
+  if (node == nullptr || node->format != MPV_FORMAT_NODE_MAP) {
+    return;
+  }
+
+  AudioPlaybackMetadata& audio = snapshot_.diagnostics.audio;
+  audio.sample_format = node_string_or(map_lookup(*node, "format"), audio.sample_format);
+  audio.channels = node_string_or(map_lookup(*node, "hr-channels"), audio.channels);
+  if (const mpv_node* sample_rate = map_lookup(*node, "samplerate"); sample_rate != nullptr) {
+    audio.sample_rate = static_cast<int>(node_int64_or(*sample_rate, audio.sample_rate));
+  }
+  if (const mpv_node* channel_count = map_lookup(*node, "channel-count");
+      channel_count != nullptr) {
+    audio.channel_count =
+        static_cast<int>(node_int64_or(*channel_count, audio.channel_count));
   }
 #else
   (void)node_data;
