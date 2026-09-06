@@ -2,16 +2,16 @@
 
 #include "config.hpp"
 #include "logger.hpp"
+#include "mpv_presentation.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
 
 #if defined(TORRVIEW_HAVE_MPV)
-#include <SDL3/SDL.h>
 #include <mpv/client.h>
-#include <mpv/render_gl.h>
 #include <mpv/stream_cb.h>
 #endif
 
@@ -28,8 +28,7 @@ std::int64_t torrent_stream_read(void* cookie, char* buffer, std::uint64_t bytes
 
   const std::int64_t result = stream->read(buffer, bytes);
   if (result <= 0) {
-    TORRVIEW_LOG_DEBUG("mpv torrent stream read returned " << result
-                                                           << " for requested=" << bytes);
+    TORRVIEW_LOG_DEBUG("mpv torrent stream read returned " << result << " for requested=" << bytes);
   }
   return result;
 }
@@ -93,10 +92,6 @@ int torrent_stream_open(void* user_data, char* uri, mpv_stream_cb_info* info) {
   info->cancel_fn = torrent_stream_cancel;
   TORRVIEW_LOG_INFO("mpv torrent stream open ok");
   return 0;
-}
-
-void* get_mpv_gl_proc_address(void*, const char* name) {
-  return reinterpret_cast<void*>(SDL_GL_GetProcAddress(name));
 }
 
 void check_mpv(int code, const char* action) {
@@ -184,21 +179,18 @@ void observe_optional_property(mpv_handle* handle, const char* name, mpv_format 
   const int code = mpv_observe_property(handle, 0, name, format);
   if (code < 0) {
     TORRVIEW_LOG_WARNING("mpv diagnostic property unavailable: " << name << " ("
-                                                                    << mpv_error_string(code)
-                                                                    << ')');
+                                                                 << mpv_error_string(code) << ')');
   }
 }
 #endif
 
 } // namespace
 
-MpvPlayer::~MpvPlayer() {
-#if defined(TORRVIEW_HAVE_MPV)
-  if (render_context_ != nullptr) {
-    mpv_render_context_free(render_context_);
-    render_context_ = nullptr;
-  }
+MpvPlayer::MpvPlayer() : presentation_(make_mpv_presentation()) {}
 
+MpvPlayer::~MpvPlayer() {
+  presentation_.reset();
+#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ != nullptr) {
     mpv_terminate_destroy(handle_);
     handle_ = nullptr;
@@ -229,10 +221,15 @@ void MpvPlayer::initialize() {
   if (handle_ == nullptr) {
     throw std::runtime_error("mpv_create failed");
   }
+  TORRVIEW_LOG_DEBUG("mpv handle created");
 
   check_mpv(mpv_set_option_string(handle_, "terminal", "no"), "mpv terminal option");
   check_mpv(mpv_set_option_string(handle_, "msg-level", "all=warn"), "mpv msg-level option");
-  check_mpv(mpv_set_option_string(handle_, "vo", "libmpv"), "mpv video output option");
+  presentation_->configure(handle_);
+  if (!subtitle_font_directory_.empty()) {
+    check_mpv(mpv_set_option_string(handle_, "sub-fonts-dir", subtitle_font_directory_.c_str()),
+              "mpv subtitle fonts");
+  }
   set_optional_mpv_option(handle_, "osc", "no");
   set_optional_mpv_option(handle_, "input-default-bindings", "no");
   set_optional_mpv_option(handle_, "input-vo-keyboard", "no");
@@ -248,21 +245,13 @@ void MpvPlayer::initialize() {
   check_mpv(mpv_set_option(handle_, "pause", MPV_FORMAT_FLAG, &flag), "mpv pause option");
 
   register_torrent_stream_protocol();
+  TORRVIEW_LOG_DEBUG("mpv initializing");
   check_mpv(mpv_initialize(handle_), "mpv_initialize");
+  check_mpv(mpv_request_log_messages(handle_, "warn"), "mpv log events");
+  TORRVIEW_LOG_DEBUG("mpv initialized");
   observe_properties();
 
-  mpv_opengl_init_params gl_init = {
-      .get_proc_address = get_mpv_gl_proc_address,
-      .get_proc_address_ctx = nullptr,
-  };
-  const char* api_type = MPV_RENDER_API_TYPE_OPENGL;
-  mpv_render_param params[] = {
-      {.type = MPV_RENDER_PARAM_API_TYPE, .data = const_cast<char*>(api_type)},
-      {.type = MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, .data = &gl_init},
-      {.type = MPV_RENDER_PARAM_INVALID, .data = nullptr},
-  };
-  check_mpv(mpv_render_context_create(&render_context_, handle_, params),
-            "mpv_render_context_create");
+  presentation_->initialize(handle_);
 
   snapshot_.available = true;
   snapshot_.initialized = true;
@@ -274,7 +263,7 @@ void MpvPlayer::initialize() {
 #endif
 }
 
-void MpvPlayer::load_file(const std::string& path) {
+void MpvPlayer::load_file(const std::string& path, bool autoplay) {
 #if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr) {
     initialize();
@@ -284,19 +273,22 @@ void MpvPlayer::load_file(const std::string& path) {
     TORRVIEW_LOG_INFO("mpv loadfile " << path);
   }
 
+  int pause = autoplay ? 0 : 1;
+  check_mpv(mpv_set_property(handle_, "pause", MPV_FORMAT_FLAG, &pause), "mpv initial pause");
   const char* args[] = {"loadfile", path.c_str(), "replace", nullptr};
   command(args);
   snapshot_.loaded = true;
-  snapshot_.paused = false;
+  snapshot_.paused = !autoplay;
   snapshot_.eof_reached = false;
   snapshot_.path = path;
   snapshot_.media_title.clear();
+  snapshot_.error.clear();
   snapshot_.diagnostics = {};
+  snapshot_.buffered_ranges.clear();
   snapshot_.status = "Loading";
-  int pause = 0;
-  check_mpv(mpv_set_property(handle_, "pause", MPV_FORMAT_FLAG, &pause), "mpv unpause");
 #else
   (void)path;
+  (void)autoplay;
   throw std::runtime_error("Cannot play local media: this build was configured without libmpv");
 #endif
 }
@@ -314,6 +306,13 @@ void MpvPlayer::process_events() {
     }
 
     switch (event->event_id) {
+    case MPV_EVENT_LOG_MESSAGE: {
+      const auto* message = static_cast<mpv_event_log_message*>(event->data);
+      if (message != nullptr) {
+        TORRVIEW_LOG_WARNING("mpv " << message->prefix << ": " << message->text);
+      }
+      break;
+    }
     case MPV_EVENT_FILE_LOADED:
       if (snapshot_.path.starts_with("torrview://")) {
         TORRVIEW_LOG_INFO("mpv event file-loaded");
@@ -336,7 +335,13 @@ void MpvPlayer::process_events() {
       }
       snapshot_.eof_reached = true;
       snapshot_.paused = true;
-      snapshot_.status = "Ended";
+      const auto* end = static_cast<mpv_event_end_file*>(event->data);
+      if (end != nullptr && end->error < 0) {
+        snapshot_.loaded = false;
+        set_status_from_error("Playback failed", end->error);
+      } else {
+        snapshot_.status = "Ended";
+      }
       break;
     }
     case MPV_EVENT_PROPERTY_CHANGE: {
@@ -360,39 +365,38 @@ void MpvPlayer::process_events() {
 #endif
 }
 
-void MpvPlayer::render(const WindowMetrics& metrics) {
-#if defined(TORRVIEW_HAVE_MPV)
-  if (render_context_ == nullptr || metrics.pixel_width <= 0 || metrics.pixel_height <= 0) {
-    return;
-  }
+void MpvPlayer::render(int width, int height) { presentation_->render(width, height); }
 
-  (void)mpv_render_context_update(render_context_);
-  mpv_opengl_fbo fbo = {
-      .fbo = 0,
-      .w = metrics.pixel_width,
-      .h = metrics.pixel_height,
-      .internal_format = 0,
-  };
-  int flip_y = 1;
-  mpv_render_param params[] = {
-      {.type = MPV_RENDER_PARAM_OPENGL_FBO, .data = &fbo},
-      {.type = MPV_RENDER_PARAM_FLIP_Y, .data = &flip_y},
-      {.type = MPV_RENDER_PARAM_INVALID, .data = nullptr},
-  };
-  const int result = mpv_render_context_render(render_context_, params);
-  if (result < 0) {
-    set_status_from_error("mpv render", result);
-  }
-#else
-  (void)metrics;
-#endif
+void MpvPlayer::report_swap() { presentation_->report_swap(); }
+
+void MpvPlayer::set_surface(void* surface, int width, int height) {
+  presentation_->set_surface(surface, width, height);
 }
 
-void MpvPlayer::report_swap() {
-#if defined(TORRVIEW_HAVE_MPV)
-  if (render_context_ != nullptr) {
-    mpv_render_context_report_swap(render_context_);
+void MpvPlayer::set_subtitle_font_directory(std::string directory) {
+  if (handle_ != nullptr) {
+    throw std::logic_error("Subtitle font directory must be set before initialization");
   }
+  subtitle_font_directory_ = std::move(directory);
+}
+
+void MpvPlayer::select_subtitle_track(int index) {
+#if defined(TORRVIEW_HAVE_MPV)
+  if (handle_ == nullptr || index < -1 ||
+      index >= static_cast<int>(snapshot_.subtitle_track_list.size())) {
+    return;
+  }
+  const std::string id =
+      index < 0 ? "no"
+                : std::to_string(snapshot_.subtitle_track_list[static_cast<std::size_t>(index)].id);
+  const int result = mpv_set_property_string(handle_, "sid", id.c_str());
+  if (result < 0) {
+    set_status_from_error("set subtitle track", result);
+  } else {
+    snapshot_.active_subtitle_index = index;
+  }
+#else
+  (void)index;
 #endif
 }
 
@@ -532,10 +536,12 @@ void MpvPlayer::stop() {
   snapshot_.eof_reached = false;
   snapshot_.time_pos = 0.0;
   snapshot_.duration = 0.0;
+  snapshot_.buffered_ranges.clear();
   snapshot_.path.clear();
   snapshot_.media_title.clear();
   snapshot_.diagnostics = {};
   snapshot_.status = "Stopped";
+  snapshot_.error.clear();
 }
 
 bool MpvPlayer::has_file() const { return snapshot_.loaded || !snapshot_.path.empty(); }
@@ -544,19 +550,17 @@ PlaybackSnapshot MpvPlayer::snapshot() const { return snapshot_; }
 
 void MpvPlayer::observe_properties() {
 #if defined(TORRVIEW_HAVE_MPV)
-  check_mpv(mpv_observe_property(handle_, 0, "time-pos", MPV_FORMAT_DOUBLE),
-            "observe time-pos");
-  check_mpv(mpv_observe_property(handle_, 0, "duration", MPV_FORMAT_DOUBLE),
-            "observe duration");
+  check_mpv(mpv_observe_property(handle_, 0, "time-pos", MPV_FORMAT_DOUBLE), "observe time-pos");
+  check_mpv(mpv_observe_property(handle_, 0, "duration", MPV_FORMAT_DOUBLE), "observe duration");
   check_mpv(mpv_observe_property(handle_, 0, "pause", MPV_FORMAT_FLAG), "observe pause");
   check_mpv(mpv_observe_property(handle_, 0, "eof-reached", MPV_FORMAT_FLAG),
             "observe eof-reached");
   check_mpv(mpv_observe_property(handle_, 0, "volume", MPV_FORMAT_DOUBLE), "observe volume");
   check_mpv(mpv_observe_property(handle_, 0, "media-title", MPV_FORMAT_STRING),
             "observe media-title");
-  check_mpv(mpv_observe_property(handle_, 0, "track-list", MPV_FORMAT_NODE),
-            "observe track-list");
+  check_mpv(mpv_observe_property(handle_, 0, "track-list", MPV_FORMAT_NODE), "observe track-list");
   observe_optional_property(handle_, "file-format", MPV_FORMAT_STRING);
+  observe_optional_property(handle_, "demuxer-cache-state", MPV_FORMAT_NODE);
   observe_optional_property(handle_, "video-params", MPV_FORMAT_NODE);
   observe_optional_property(handle_, "audio-params", MPV_FORMAT_NODE);
   observe_optional_property(handle_, "video-bitrate", MPV_FORMAT_DOUBLE);
@@ -572,11 +576,33 @@ void MpvPlayer::observe_properties() {
 
 void MpvPlayer::handle_property(const char* name, void* data, int format) {
 #if defined(TORRVIEW_HAVE_MPV)
-  if (name == nullptr || data == nullptr) {
+  if (name == nullptr) {
     return;
   }
 
   const std::string_view property(name);
+  if (property == "demuxer-cache-state") {
+    snapshot_.buffered_ranges.clear();
+    if (data == nullptr || format != MPV_FORMAT_NODE || snapshot_.path.empty()) {
+      return;
+    }
+    const auto* ranges = map_lookup(*static_cast<mpv_node*>(data), "seekable-ranges");
+    if (ranges == nullptr || ranges->format != MPV_FORMAT_NODE_ARRAY || ranges->u.list == nullptr) {
+      return;
+    }
+    for (int index = 0; index < ranges->u.list->num; ++index) {
+      const auto& range = ranges->u.list->values[index];
+      const double start = node_double_or(map_lookup(range, "start"), -1.0);
+      const double end = node_double_or(map_lookup(range, "end"), -1.0);
+      if (std::isfinite(start) && std::isfinite(end) && end > std::max(0.0, start)) {
+        snapshot_.buffered_ranges.push_back({std::max(0.0, start), end});
+      }
+    }
+    return;
+  }
+  if (data == nullptr) {
+    return;
+  }
   if (property == "time-pos" && format == MPV_FORMAT_DOUBLE) {
     snapshot_.time_pos = *static_cast<double*>(data);
   } else if (property == "duration" && format == MPV_FORMAT_DOUBLE) {
@@ -588,12 +614,13 @@ void MpvPlayer::handle_property(const char* name, void* data, int format) {
   } else if (property == "volume" && format == MPV_FORMAT_DOUBLE) {
     snapshot_.volume = *static_cast<double*>(data);
   } else if (property == "media-title" && format == MPV_FORMAT_STRING) {
-    auto* value = static_cast<char*>(data);
+    const auto* value = *static_cast<char**>(data);
     snapshot_.media_title = value != nullptr ? value : "";
   } else if (property == "track-list" && format == MPV_FORMAT_NODE) {
     update_track_counts(data);
   } else if (property == "file-format" && format == MPV_FORMAT_STRING) {
-    snapshot_.diagnostics.file_format = static_cast<char*>(data);
+    const auto* value = *static_cast<char**>(data);
+    snapshot_.diagnostics.file_format = value != nullptr ? value : "";
   } else if (property == "video-params" && format == MPV_FORMAT_NODE) {
     update_video_params(data);
   } else if (property == "audio-params" && format == MPV_FORMAT_NODE) {
@@ -615,7 +642,8 @@ void MpvPlayer::handle_property(const char* name, void* data, int format) {
   } else if (property == "decoder-frame-drop-count" && format == MPV_FORMAT_INT64) {
     snapshot_.diagnostics.decoder_dropped_frames = *static_cast<std::int64_t*>(data);
   } else if (property == "hwdec-current" && format == MPV_FORMAT_STRING) {
-    snapshot_.diagnostics.hardware_decoder = static_cast<char*>(data);
+    const auto* value = *static_cast<char**>(data);
+    snapshot_.diagnostics.hardware_decoder = value != nullptr ? value : "";
   }
 #else
   (void)name;
@@ -635,6 +663,8 @@ void MpvPlayer::update_track_counts(void* node_data) {
   snapshot_.active_audio_index = -1;
   snapshot_.audio_track_ids.clear();
   snapshot_.audio_track_list.clear();
+  snapshot_.subtitle_track_list.clear();
+  snapshot_.active_subtitle_index = -1;
   video.codec.clear();
   video.codec_profile.clear();
   video.decoder.clear();
@@ -668,8 +698,7 @@ void MpvPlayer::update_track_counts(void* node_data) {
         video.height = static_cast<int>(
             node_int64_or(map_lookup(track, "demux-h"), static_cast<int64_t>(video.height)));
         video.fps = node_double_or(map_lookup(track, "demux-fps"), video.fps);
-        video.bitrate_bps =
-            node_double_or(map_lookup(track, "demux-bitrate"), video.bitrate_bps);
+        video.bitrate_bps = node_double_or(map_lookup(track, "demux-bitrate"), video.bitrate_bps);
         video_metadata_set = true;
       }
     } else if (node_string_equals(*type, "audio")) {
@@ -703,19 +732,25 @@ void MpvPlayer::update_track_counts(void* node_data) {
         audio.codec = node_string_or(map_lookup(track, "codec"));
         audio.codec_profile = node_string_or(map_lookup(track, "codec-profile"));
         audio.decoder = node_string_or(map_lookup(track, "decoder"));
-        audio.sample_format =
-            node_string_or(map_lookup(track, "format-name"), audio.sample_format);
+        audio.sample_format = node_string_or(map_lookup(track, "format-name"), audio.sample_format);
         audio.channels = node_string_or(map_lookup(track, "demux-channels"), audio.channels);
         audio.sample_rate = static_cast<int>(node_int64_or(
             map_lookup(track, "demux-samplerate"), static_cast<int64_t>(audio.sample_rate)));
         audio.channel_count = static_cast<int>(node_int64_or(
             map_lookup(track, "demux-channel-count"), static_cast<int64_t>(audio.channel_count)));
-        audio.bitrate_bps =
-            node_double_or(map_lookup(track, "demux-bitrate"), audio.bitrate_bps);
+        audio.bitrate_bps = node_double_or(map_lookup(track, "demux-bitrate"), audio.bitrate_bps);
         audio_metadata_set = true;
       }
     } else if (node_string_equals(*type, "sub")) {
-      ++snapshot_.subtitle_tracks;
+      const int sub_index = snapshot_.subtitle_tracks++;
+      const auto id = node_int64_or(map_lookup(track, "id"), -1);
+      const auto label = node_string_or(
+          map_lookup(track, "title"),
+          node_string_or(map_lookup(track, "lang"), "Subtitle " + std::to_string(sub_index + 1)));
+      snapshot_.subtitle_track_list.push_back({.id = id, .label = label});
+      if (node_flag_or(map_lookup(track, "selected"), false)) {
+        snapshot_.active_subtitle_index = sub_index;
+      }
     }
   }
 
@@ -765,8 +800,7 @@ void MpvPlayer::update_audio_params(void* node_data) {
   }
   if (const mpv_node* channel_count = map_lookup(*node, "channel-count");
       channel_count != nullptr) {
-    audio.channel_count =
-        static_cast<int>(node_int64_or(*channel_count, audio.channel_count));
+    audio.channel_count = static_cast<int>(node_int64_or(*channel_count, audio.channel_count));
   }
 #else
   (void)node_data;
@@ -780,9 +814,9 @@ void MpvPlayer::register_torrent_stream_protocol() {
     return;
   }
 
-  check_mpv(mpv_stream_cb_add_ro(handle_, "torrview", torrent_stream_provider_,
-                                 torrent_stream_open),
-            "mpv torrview stream protocol");
+  check_mpv(
+      mpv_stream_cb_add_ro(handle_, "torrview", torrent_stream_provider_, torrent_stream_open),
+      "mpv torrview stream protocol");
   torrent_stream_protocol_registered_ = true;
 #endif
 }
@@ -801,8 +835,7 @@ void MpvPlayer::command(const char** args) {
       out << " -> " << result << " (" << mpv_error_string(result) << ')';
       TORRVIEW_LOG_ERROR(out.str());
     }
-    set_status_from_error(args != nullptr && args[0] != nullptr ? args[0] : "mpv command",
-                          result);
+    set_status_from_error(args != nullptr && args[0] != nullptr ? args[0] : "mpv command", result);
   }
 #else
   (void)args;
@@ -811,7 +844,9 @@ void MpvPlayer::command(const char** args) {
 
 void MpvPlayer::set_status_from_error(const char* action, int code) {
 #if defined(TORRVIEW_HAVE_MPV)
-  snapshot_.status = std::string(action != nullptr ? action : "mpv") + ": " + mpv_error_string(code);
+  snapshot_.status =
+      std::string(action != nullptr ? action : "mpv") + ": " + mpv_error_string(code);
+  snapshot_.error = snapshot_.status;
 #else
   (void)action;
   (void)code;

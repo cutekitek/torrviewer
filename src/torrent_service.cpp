@@ -9,13 +9,13 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <filesystem>
-#include <cmath>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -26,7 +26,7 @@
 #include <system_error>
 #include <vector>
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -64,10 +64,15 @@ std::string file_extension(std::string_view path) {
   return extension;
 }
 
-std::string metadata_cache_path() {
-  std::filesystem::path path = std::filesystem::temp_directory_path() / "torrview-metadata";
+std::string metadata_cache_path(const std::string& directory) {
+  std::filesystem::path path = directory.empty()
+                                   ? std::filesystem::temp_directory_path() / "torrview-metadata"
+                                   : std::filesystem::path(directory);
   std::error_code error;
   std::filesystem::create_directories(path, error);
+  if (error) {
+    throw std::runtime_error("Cannot create metadata directory: " + error.message());
+  }
   return path.string();
 }
 
@@ -88,7 +93,7 @@ std::string compact_alert_detail(std::string value) {
   return value;
 }
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 std::optional<std::string> linux_default_route_interface() {
   std::ifstream routes("/proc/net/route");
   std::string iface;
@@ -129,8 +134,7 @@ std::optional<std::string> linux_ipv4_for_interface(const std::string& interface
   std::optional<std::string> result;
   for (ifaddrs* address = addresses; address != nullptr; address = address->ifa_next) {
     if (address->ifa_addr == nullptr || interface_name != address->ifa_name ||
-        address->ifa_addr->sa_family != AF_INET ||
-        (address->ifa_flags & IFF_LOOPBACK) != 0U) {
+        address->ifa_addr->sa_family != AF_INET || (address->ifa_flags & IFF_LOOPBACK) != 0U) {
       continue;
     }
 
@@ -148,7 +152,7 @@ std::optional<std::string> linux_ipv4_for_interface(const std::string& interface
 #endif
 
 std::string default_listen_interfaces() {
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   if (const auto iface = linux_default_route_interface(); iface.has_value()) {
     if (const auto ipv4 = linux_ipv4_for_interface(*iface); ipv4.has_value()) {
       return *ipv4;
@@ -288,9 +292,13 @@ lt::settings_pack make_session_settings(const TorrentRuntimeSettings& runtime) {
   return settings;
 }
 
-lt::session_params make_session_params(const TorrentRuntimeSettings& runtime) {
+lt::session_params make_session_params(const TorrentRuntimeSettings& runtime,
+                                       std::uint64_t session) {
   lt::session_params params(make_session_settings(runtime));
-  params.disk_io_constructor = create_memory_disk_io;
+  params.disk_io_constructor = [session](lt::io_context& io, const lt::settings_interface&,
+                                         lt::counters&) {
+    return std::make_unique<MemoryDiskIO>(io, session);
+  };
   return params;
 }
 
@@ -400,8 +408,9 @@ std::vector<TorrentFileInfo> filter_video_files(const std::vector<TorrentFileInf
   return video_files;
 }
 
-void configure_metadata_only_add(lt::add_torrent_params& params, int max_connections) {
-  params.save_path = metadata_cache_path();
+void configure_metadata_only_add(lt::add_torrent_params& params, int max_connections,
+                                 const std::string& metadata_directory) {
+  params.save_path = metadata_cache_path(metadata_directory);
   params.flags &= ~lt::torrent_flags::auto_managed;
   params.flags &= ~lt::torrent_flags::paused;
   params.flags |= lt::torrent_flags::default_dont_download;
@@ -478,8 +487,7 @@ std::string format_rate(int bytes_per_second) {
     out.precision(1);
     out << std::fixed << static_cast<double>(bytes_per_second) / mib << " MiB/s";
   } else {
-    out << std::max(1, static_cast<int>(static_cast<double>(bytes_per_second) / kib))
-        << " KiB/s";
+    out << std::max(1, static_cast<int>(static_cast<double>(bytes_per_second) / kib)) << " KiB/s";
   }
   return out.str();
 }
@@ -495,8 +503,8 @@ PieceWindow clamp_to_file_window(PieceWindow window, int first_piece, int end_pi
 }
 
 bool is_operation_canceled(const lt::error_code& error) {
-  return error == lt::error_code(boost::system::errc::operation_canceled,
-                                 boost::system::generic_category());
+  return error ==
+         lt::error_code(boost::system::errc::operation_canceled, boost::system::generic_category());
 }
 
 #endif
@@ -524,10 +532,10 @@ struct SchedulerDiagnostics {
 class StreamingScheduler final {
 public:
   StreamingScheduler(lt::torrent_handle handle, std::shared_ptr<const lt::torrent_info> info,
-                     int file_index, CachePolicy policy, std::uint64_t stream_id)
+                     int file_index, CachePolicy policy, std::uint64_t stream_id,
+                     std::uint64_t session)
       : handle_(std::move(handle)), info_(std::move(info)), file_index_(file_index),
-        stream_id_(stream_id),
-        policy_(normalize_cache_policy(policy)) {
+        stream_id_(stream_id), session_id_(session), policy_(normalize_cache_policy(policy)) {
     const lt::file_storage& files = info_->files();
     const lt::file_index_t index(file_index_);
     file_offset_ = files.file_offset(index);
@@ -542,13 +550,11 @@ public:
       end_file_piece_ = std::clamp(end_file_piece_, first_file_piece_, total_pieces_);
     }
 
-    TORRVIEW_LOG_INFO("torrent scheduler stream=" << stream_id_ << " file=" << file_index_
-                                                  << " offset=" << file_offset_
-                                                  << " size=" << file_size_
-                                                  << " piece_length=" << piece_length_
-                                                  << " file_pieces=[" << first_file_piece_ << ','
-                                                  << end_file_piece_ << ") cache_mib="
-                                                  << policy_.limit_mib());
+    TORRVIEW_LOG_INFO("torrent scheduler stream="
+                      << stream_id_ << " file=" << file_index_ << " offset=" << file_offset_
+                      << " size=" << file_size_ << " piece_length=" << piece_length_
+                      << " file_pieces=[" << first_file_piece_ << ',' << end_file_piece_
+                      << ") cache_mib=" << policy_.limit_mib());
   }
 
   void prepare_initial_priorities() {
@@ -565,8 +571,8 @@ public:
           static_cast<std::size_t>(info_->num_files()), lt::dont_download);
       file_priorities[static_cast<std::size_t>(file_index_)] = lt::top_priority;
       handle_.prioritize_files(file_priorities);
-      TORRVIEW_LOG_INFO("torrent scheduler stream=" << stream_id_
-                                                    << " selected file priority prepared and torrent resumed");
+      TORRVIEW_LOG_INFO("torrent scheduler stream="
+                        << stream_id_ << " selected file priority prepared and torrent resumed");
     } catch (const std::exception&) {
       TORRVIEW_LOG_WARNING("torrent scheduler stream=" << stream_id_
                                                        << " failed to prepare file priorities");
@@ -580,10 +586,9 @@ public:
       std::lock_guard lock(mutex_);
       policy_ = normalize_cache_policy(policy);
     }
-    TORRVIEW_LOG_INFO("torrent scheduler stream=" << stream_id_
-                                                  << " cache policy changed to "
+    TORRVIEW_LOG_INFO("torrent scheduler stream=" << stream_id_ << " cache policy changed to "
                                                   << policy_.limit_mib() << " MiB");
-    set_memory_disk_cache_policy(policy_);
+    set_memory_disk_cache_policy(session_id_, policy_);
     schedule_for_read(last_file_position(), 1);
   }
 
@@ -601,10 +606,9 @@ public:
       urgent_piece_ = urgent_piece;
       work = build_work_locked(torrent_offset, false);
     }
-    TORRVIEW_LOG_DEBUG("torrent scheduler stream=" << stream_id_ << " read position="
-                                                   << clamped_position
-                                                   << " requested=" << requested_bytes
-                                                   << " urgent_piece=" << urgent_piece);
+    TORRVIEW_LOG_DEBUG("torrent scheduler stream="
+                       << stream_id_ << " read position=" << clamped_position
+                       << " requested=" << requested_bytes << " urgent_piece=" << urgent_piece);
     apply_work(work);
   }
 
@@ -624,8 +628,8 @@ public:
       stalled_ = false;
       work = build_work_locked(torrent_offset, true);
     }
-    TORRVIEW_LOG_INFO("torrent scheduler stream=" << stream_id_ << " seek position="
-                                                  << clamped_position
+    TORRVIEW_LOG_INFO("torrent scheduler stream=" << stream_id_
+                                                  << " seek position=" << clamped_position
                                                   << " urgent_piece=" << urgent_piece);
     apply_work(work);
   }
@@ -649,14 +653,12 @@ public:
         TORRVIEW_LOG_DEBUG("torrent scheduler stream=" << stream_id_
                                                        << " urgent deadline piece=" << piece_key);
       } else {
-        TORRVIEW_LOG_DEBUG("torrent scheduler stream=" << stream_id_
-                                                       << " urgent piece already available piece="
-                                                       << piece_key);
+        TORRVIEW_LOG_DEBUG("torrent scheduler stream="
+                           << stream_id_ << " urgent piece already available piece=" << piece_key);
       }
     } catch (const std::exception&) {
-      TORRVIEW_LOG_WARNING("torrent scheduler stream=" << stream_id_
-                                                       << " failed to request urgent piece="
-                                                       << piece_key);
+      TORRVIEW_LOG_WARNING("torrent scheduler stream="
+                           << stream_id_ << " failed to request urgent piece=" << piece_key);
     }
   }
 
@@ -665,8 +667,7 @@ public:
     requested_at_.erase(static_cast<int>(piece));
     last_piece_progress_ = std::chrono::steady_clock::now();
     stalled_ = false;
-    TORRVIEW_LOG_DEBUG("torrent scheduler stream=" << stream_id_
-                                                   << " piece finished piece="
+    TORRVIEW_LOG_DEBUG("torrent scheduler stream=" << stream_id_ << " piece finished piece="
                                                    << static_cast<int>(piece));
   }
 
@@ -696,7 +697,8 @@ public:
   }
 
   SchedulerSnapshot snapshot(int peers, int download_rate) {
-    const MemoryDiskCacheStatus cache_status = memory_disk_cache_status();
+    const MemoryDiskCacheStatus cache_status =
+        memory_disk_cache_status(session_id_, info_->info_hashes().get_best());
 
     std::set<int> evicted(cache_status.evicted_piece_indices.begin(),
                           cache_status.evicted_piece_indices.end());
@@ -759,10 +761,9 @@ public:
       view.piece_states.push_back(state);
     }
 
-    view.buffer_progress = window_pieces > 0
-                               ? static_cast<float>(ready_window_pieces) /
-                                     static_cast<float>(window_pieces)
-                               : 0.0F;
+    view.buffer_progress = window_pieces > 0 ? static_cast<float>(ready_window_pieces) /
+                                                   static_cast<float>(window_pieces)
+                                             : 0.0F;
     view.buffering = !urgent_ready;
 
     std::ostringstream status;
@@ -814,20 +815,17 @@ public:
               availability[static_cast<std::size_t>(piece)] == 0) {
             TORRVIEW_LOG_WARNING("torrent scheduler stream="
                                  << stream_id_
-                                 << " stalled piece unavailable; keeping deadline piece="
-                                 << piece);
+                                 << " stalled piece unavailable; keeping deadline piece=" << piece);
             continue;
           }
           handle_.reset_piece_deadline(piece_index);
           handle_.set_piece_deadline(piece_index, 0);
-          TORRVIEW_LOG_WARNING("torrent scheduler stream=" << stream_id_
-                                                           << " stalled piece reprioritized piece="
-                                                           << piece);
+          TORRVIEW_LOG_WARNING("torrent scheduler stream="
+                               << stream_id_ << " stalled piece reprioritized piece=" << piece);
         }
       } catch (const std::exception&) {
-        TORRVIEW_LOG_WARNING("torrent scheduler stream=" << stream_id_
-                                                         << " stalled piece reprioritize failed piece="
-                                                         << piece);
+        TORRVIEW_LOG_WARNING("torrent scheduler stream="
+                             << stream_id_ << " stalled piece reprioritize failed piece=" << piece);
       }
     }
   }
@@ -872,16 +870,16 @@ private:
                       std::max(0, total_pieces_ - 1));
   }
 
-  [[nodiscard]] static lt::download_priority_t piece_priority_for_buffer_position(
-      int sequence, int total) {
+  [[nodiscard]] static lt::download_priority_t piece_priority_for_buffer_position(int sequence,
+                                                                                  int total) {
     if (total <= 1) {
       return lt::top_priority;
     }
 
     const int clamped_sequence = std::clamp(sequence, 0, total - 1);
-    const int priority = max_stream_priority -
-                         ((max_stream_priority - min_stream_priority) * clamped_sequence) /
-                             (total - 1);
+    const int priority =
+        max_stream_priority -
+        ((max_stream_priority - min_stream_priority) * clamped_sequence) / (total - 1);
     return lt::download_priority_t{
         static_cast<std::uint8_t>(std::clamp(priority, min_stream_priority, max_stream_priority))};
   }
@@ -890,10 +888,11 @@ private:
     SchedulerWork work;
     work.clear_deadlines = clear_deadlines;
 
-    PieceWindow next_window = compute_retained_piece_window(torrent_offset, total_pieces_,
-                                                            piece_length_, policy_);
+    PieceWindow next_window =
+        compute_retained_piece_window(torrent_offset, total_pieces_, piece_length_, policy_);
     next_window = clamp_to_file_window(next_window, first_file_piece_, end_file_piece_);
-    update_memory_disk_retained_window(torrent_offset);
+    update_memory_disk_retained_window(session_id_, info_->info_hashes().get_best(),
+                                       torrent_offset);
 
     std::set<int> previous_deadlines = deadline_pieces_;
     std::set<int> next_deadlines;
@@ -936,13 +935,11 @@ private:
 
     active_window_ = next_window;
     deadline_pieces_ = std::move(next_deadlines);
-    TORRVIEW_LOG_DEBUG("torrent scheduler stream=" << stream_id_ << " window=["
-                                                   << active_window_.first_piece << ','
-                                                   << active_window_.end_piece << ") deadlines="
-                                                   << work.deadlines.size()
-                                                   << " background_priority="
-                                                   << work.background_priority.size()
-                                                   << " clear_deadlines=" << work.clear_deadlines);
+    TORRVIEW_LOG_DEBUG("torrent scheduler stream="
+                       << stream_id_ << " window=[" << active_window_.first_piece << ','
+                       << active_window_.end_piece << ") deadlines=" << work.deadlines.size()
+                       << " background_priority=" << work.background_priority.size()
+                       << " clear_deadlines=" << work.clear_deadlines);
     return work;
   }
 
@@ -981,6 +978,7 @@ private:
   std::shared_ptr<const lt::torrent_info> info_;
   int file_index_ = -1;
   std::uint64_t stream_id_ = 0;
+  std::uint64_t session_id_ = 0;
   std::int64_t file_offset_ = 0;
   std::int64_t file_size_ = 0;
   int piece_length_ = 1;
@@ -1004,24 +1002,22 @@ class TorrentPieceStream final : public TorrentStreamReader {
 public:
   TorrentPieceStream(lt::torrent_handle handle, std::shared_ptr<const lt::torrent_info> info,
                      int file_index, std::shared_ptr<StreamingScheduler> scheduler,
-                     std::uint64_t stream_id)
+                     std::uint64_t stream_id, std::uint64_t session)
       : handle_(std::move(handle)), info_(std::move(info)), scheduler_(std::move(scheduler)),
-        stream_id_(stream_id) {
+        stream_id_(stream_id), session_id_(session) {
     const lt::file_storage& files = info_->files();
     const lt::file_index_t index(file_index);
     file_offset_ = files.file_offset(index);
     file_size_ = files.file_size(index);
     piece_length_ = files.piece_length();
     TORRVIEW_LOG_INFO("torrent stream=" << stream_id_ << " opened file=" << file_index
-                                        << " offset=" << file_offset_
-                                        << " size=" << file_size_);
+                                        << " offset=" << file_offset_ << " size=" << file_size_);
   }
 
   std::int64_t read(char* buffer, std::uint64_t bytes) override {
     if (buffer == nullptr || bytes == 0) {
-      TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_
-                                           << " read noop buffer=" << (buffer != nullptr)
-                                           << " bytes=" << bytes);
+      TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_ << " read noop buffer="
+                                           << (buffer != nullptr) << " bytes=" << bytes);
       return 0;
     }
 
@@ -1038,9 +1034,8 @@ public:
     const int piece_size = info_->piece_size(piece);
     const std::int64_t file_remaining = file_size_ - position;
     const std::int64_t piece_remaining = piece_size - piece_offset;
-    const std::size_t to_copy = static_cast<std::size_t>(
-        std::min<std::int64_t>({static_cast<std::int64_t>(bytes), file_remaining,
-                                piece_remaining}));
+    const std::size_t to_copy = static_cast<std::size_t>(std::min<std::int64_t>(
+        {static_cast<std::int64_t>(bytes), file_remaining, piece_remaining}));
 
     if (to_copy == 0) {
       return 0;
@@ -1051,8 +1046,7 @@ public:
     }
 
     if (!wait_for_piece(piece, piece_offset, static_cast<int>(to_copy), buffer)) {
-      TORRVIEW_LOG_WARNING("torrent stream=" << stream_id_
-                                             << " read failed waiting for piece="
+      TORRVIEW_LOG_WARNING("torrent stream=" << stream_id_ << " read failed waiting for piece="
                                              << static_cast<int>(piece)
                                              << " position=" << position);
       return -1;
@@ -1158,9 +1152,9 @@ public:
           requested_pieces_.erase(piece_key);
           error_ = "Torrent piece read returned no data";
         } else {
-          TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_
-                                               << " ignored unrequested empty read_piece alert piece="
-                                               << piece_key);
+          TORRVIEW_LOG_DEBUG("torrent stream="
+                             << stream_id_
+                             << " ignored unrequested empty read_piece alert piece=" << piece_key);
           return;
         }
       } else {
@@ -1210,9 +1204,8 @@ private:
       std::lock_guard lock(mutex_);
       seek_generation = seek_generation_;
       if (cancelled_) {
-        TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_
-                                             << " wait aborted by cancellation piece="
-                                             << piece_key);
+        TORRVIEW_LOG_DEBUG(
+            "torrent stream=" << stream_id_ << " wait aborted by cancellation piece=" << piece_key);
         return false;
       }
       if (!error_.empty()) {
@@ -1235,11 +1228,10 @@ private:
       });
 
       if (cancelled_ || seek_generation_ != seek_generation || !error_.empty()) {
-        TORRVIEW_LOG_WARNING("torrent stream=" << stream_id_ << " wait ended without data piece="
-                                               << piece_key << " cancelled=" << cancelled_
-                                               << " stale_seek="
-                                               << (seek_generation_ != seek_generation)
-                                               << " error=" << error_);
+        TORRVIEW_LOG_WARNING("torrent stream="
+                             << stream_id_ << " wait ended without data piece=" << piece_key
+                             << " cancelled=" << cancelled_ << " stale_seek="
+                             << (seek_generation_ != seek_generation) << " error=" << error_);
         return false;
       }
       if (read_verified_piece_bytes(piece, offset, length, buffer)) {
@@ -1261,8 +1253,11 @@ private:
     }
   }
 
-  bool read_verified_piece_bytes(lt::piece_index_t piece, int offset, int length, char* buffer) const {
-    return piece_verified(piece) && read_memory_disk_bytes(piece, offset, length, buffer);
+  bool read_verified_piece_bytes(lt::piece_index_t piece, int offset, int length,
+                                 char* buffer) const {
+    return piece_verified(piece) &&
+           read_memory_disk_bytes(session_id_, info_->info_hashes().get_best(), piece, offset,
+                                  length, buffer);
   }
 
   void request_piece(lt::piece_index_t piece) {
@@ -1292,8 +1287,7 @@ private:
         }
       } else {
         handle_.set_piece_deadline(piece, 0);
-        TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_
-                                             << " request_piece deadline piece="
+        TORRVIEW_LOG_DEBUG("torrent stream=" << stream_id_ << " request_piece deadline piece="
                                              << static_cast<int>(piece));
       }
     } catch (const std::exception& error) {
@@ -1312,6 +1306,7 @@ private:
   std::shared_ptr<const lt::torrent_info> info_;
   std::shared_ptr<StreamingScheduler> scheduler_;
   std::uint64_t stream_id_ = 0;
+  std::uint64_t session_id_ = 0;
   std::int64_t file_offset_ = 0;
   std::int64_t file_size_ = 0;
   int piece_length_ = 1;
@@ -1327,16 +1322,28 @@ private:
 
 class TorrentService::Impl final {
 public:
-  Impl() : session_(make_session_params(runtime_settings_)) {
+  explicit Impl(std::string metadata_directory)
+      : metadata_directory_(std::move(metadata_directory)),
+        session_(make_session_params(runtime_settings_, memory_session_id_)) {
     snapshot_.available = true;
     snapshot_.state = TorrentLoadState::idle;
     snapshot_.status = "Ready";
     snapshot_.cache_limit_mib = cache_policy_.limit_mib();
     snapshot_.cache_bytes_limit = cache_policy_.max_bytes;
-    set_memory_disk_cache_policy(cache_policy_);
+    set_memory_disk_cache_policy(memory_session_id_, cache_policy_);
   }
 
   bool available() const { return true; }
+
+  void set_suspended(bool suspended) {
+    if (suspended) {
+      session_.pause();
+    } else {
+      session_.resume();
+    }
+  }
+
+  void network_changed() { session_.reopen_network_sockets(); }
 
   void load_torrent_file(const std::string& path) {
     clear_current();
@@ -1360,7 +1367,7 @@ public:
 
     lt::add_torrent_params params;
     params.ti = std::move(info);
-    configure_metadata_only_add(params, runtime_settings_.max_connections);
+    configure_metadata_only_add(params, runtime_settings_.max_connections, metadata_directory_);
     session_.async_add_torrent(std::move(params));
   }
 
@@ -1377,7 +1384,7 @@ public:
       return;
     }
 
-    configure_metadata_only_add(params, runtime_settings_.max_connections);
+    configure_metadata_only_add(params, runtime_settings_.max_connections, metadata_directory_);
     session_.async_add_torrent(std::move(params));
   }
 
@@ -1481,7 +1488,7 @@ public:
 
   void set_cache_limit_mib(int limit_mib) {
     cache_policy_ = CachePolicy::from_limit_mib(limit_mib);
-    set_memory_disk_cache_policy(cache_policy_);
+    set_memory_disk_cache_policy(memory_session_id_, cache_policy_);
     snapshot_.cache_limit_mib = cache_policy_.limit_mib();
     snapshot_.cache_bytes_limit = cache_policy_.max_bytes;
     TORRVIEW_LOG_INFO("torrent cache limit set to " << snapshot_.cache_limit_mib << " MiB");
@@ -1550,8 +1557,8 @@ public:
     const auto [generation, file_index] = *parsed;
     if (generation != stream_generation_) {
       error = "Torrent stream URI is stale";
-      TORRVIEW_LOG_ERROR("torrent stream open failed: " << error << " uri_generation="
-                                                        << generation << " current_generation="
+      TORRVIEW_LOG_ERROR("torrent stream open failed: " << error << " uri_generation=" << generation
+                                                        << " current_generation="
                                                         << stream_generation_);
       return {};
     }
@@ -1581,14 +1588,14 @@ public:
     const std::uint64_t stream_id = next_stream_id_++;
     TORRVIEW_LOG_INFO("torrent stream=" << stream_id << " creating for file=" << file_index
                                         << " generation=" << generation);
-    auto scheduler =
-        std::make_shared<StreamingScheduler>(handle_, info, file_index, cache_policy_, stream_id);
+    auto scheduler = std::make_shared<StreamingScheduler>(handle_, info, file_index, cache_policy_,
+                                                          stream_id, memory_session_id_);
     scheduler->prepare_initial_priorities();
     active_scheduler_ = scheduler;
     snapshot_.active_file_index = file_index;
 
-    auto stream =
-        std::make_shared<TorrentPieceStream>(handle_, info, file_index, scheduler, stream_id);
+    auto stream = std::make_shared<TorrentPieceStream>(handle_, info, file_index, scheduler,
+                                                       stream_id, memory_session_id_);
     {
       std::lock_guard lock(streams_mutex_);
       active_streams_.push_back(stream);
@@ -1726,8 +1733,8 @@ private:
     if (active_scheduler_ != nullptr) {
       const std::string blocked_reason = log_playback_status(status);
       active_scheduler_->check_stalled();
-      SchedulerSnapshot scheduler = active_scheduler_->snapshot(snapshot_.peers,
-                                                                snapshot_.download_rate);
+      SchedulerSnapshot scheduler =
+          active_scheduler_->snapshot(snapshot_.peers, snapshot_.download_rate);
       snapshot_.active_file_index = scheduler.active_file_index;
       snapshot_.cache_limit_mib = scheduler.cache_limit_mib;
       snapshot_.cache_bytes_used = scheduler.cache_bytes_used;
@@ -1821,45 +1828,24 @@ private:
       }
     }
 
-    TORRVIEW_LOG_DEBUG("torrent playback status state=" << libtorrent_state_label(status.state)
-                                                        << " paused="
-                                                        << bool(flags & lt::torrent_flags::paused)
-                                                        << " upload_mode="
-                                                        << bool(flags & lt::torrent_flags::upload_mode)
-                                                        << " peers=" << status.num_peers
-                                                        << " seeds=" << status.num_seeds
-                                                        << " connections=" << status.num_connections
-                                                        << " candidates="
-                                                        << status.connect_candidates
-                                                        << " list_peers=" << status.list_peers
-                                                        << " list_seeds=" << status.list_seeds
-                                                        << " down=" << status.download_rate
-                                                        << " payload_down="
-                                                        << status.download_payload_rate
-                                                        << " wanted_done="
-                                                        << status.total_wanted_done << '/'
-                                                        << status.total_wanted
-                                                        << " queue_pieces=" << queue.size()
-                                                        << " queue_blocks=" << queued_blocks
-                                                        << " requested_blocks="
-                                                        << requested_blocks
-                                                        << " writing_blocks=" << writing_blocks
-                                                        << " finished_blocks=" << finished_blocks
-                                                        << " urgent_piece="
-                                                        << scheduler.urgent_piece
-                                                        << " urgent_availability="
-                                                        << urgent_availability
-                                                        << " urgent_priority="
-                                                        << static_cast<int>(urgent_priority)
-                                                        << " urgent_in_queue=" << urgent_in_queue
-                                                        << " urgent_requested_blocks="
-                                                        << urgent_requested_blocks
-                                                        << " urgent_finished_blocks="
-                                                        << urgent_finished_blocks
-                                                        << " available_window_pieces="
-                                                        << available_window_pieces
-                                                        << " unavailable_window_pieces="
-                                                        << unavailable_window_pieces);
+    TORRVIEW_LOG_DEBUG(
+        "torrent playback status state="
+        << libtorrent_state_label(status.state)
+        << " paused=" << bool(flags & lt::torrent_flags::paused)
+        << " upload_mode=" << bool(flags & lt::torrent_flags::upload_mode)
+        << " peers=" << status.num_peers << " seeds=" << status.num_seeds
+        << " connections=" << status.num_connections << " candidates=" << status.connect_candidates
+        << " list_peers=" << status.list_peers << " list_seeds=" << status.list_seeds
+        << " down=" << status.download_rate << " payload_down=" << status.download_payload_rate
+        << " wanted_done=" << status.total_wanted_done << '/' << status.total_wanted
+        << " queue_pieces=" << queue.size() << " queue_blocks=" << queued_blocks
+        << " requested_blocks=" << requested_blocks << " writing_blocks=" << writing_blocks
+        << " finished_blocks=" << finished_blocks << " urgent_piece=" << scheduler.urgent_piece
+        << " urgent_availability=" << urgent_availability << " urgent_priority="
+        << static_cast<int>(urgent_priority) << " urgent_in_queue=" << urgent_in_queue
+        << " urgent_requested_blocks=" << urgent_requested_blocks << " urgent_finished_blocks="
+        << urgent_finished_blocks << " available_window_pieces=" << available_window_pieces
+        << " unavailable_window_pieces=" << unavailable_window_pieces);
 
     if (urgent_availability == 0 && status.num_seeds == 0 && status.list_seeds == 0) {
       if (now - last_unavailable_piece_warning_ >= std::chrono::seconds(10)) {
@@ -1878,7 +1864,9 @@ private:
     return {};
   }
 
+  std::string metadata_directory_;
   TorrentRuntimeSettings runtime_settings_;
+  const std::uint64_t memory_session_id_ = next_memory_disk_session_id();
   lt::session session_;
   lt::torrent_handle handle_;
   TorrentSnapshot snapshot_;
@@ -1896,7 +1884,7 @@ private:
 #else
 class TorrentService::Impl final {
 public:
-  Impl() {
+  explicit Impl(std::string) {
     snapshot_.available = false;
     snapshot_.state = TorrentLoadState::idle;
     snapshot_.status = "This build was configured without libtorrent";
@@ -1915,6 +1903,8 @@ public:
   }
 
   void process_alerts() {}
+  void set_suspended(bool) {}
+  void network_changed() {}
 
   void set_cache_limit_mib(int limit_mib) {
     snapshot_.cache_limit_mib = CachePolicy::from_limit_mib(limit_mib).limit_mib();
@@ -1952,33 +1942,68 @@ private:
 };
 #endif
 
-TorrentService::TorrentService() : impl_(std::make_unique<Impl>()) {}
+TorrentService::TorrentService(std::string metadata_directory)
+    : impl_(std::make_unique<Impl>(std::move(metadata_directory))) {}
 TorrentService::~TorrentService() = default;
 
-bool TorrentService::available() const { return impl_->available(); }
+bool TorrentService::available() const {
+  std::lock_guard lock(mutex_);
+  return impl_->available();
+}
 
-void TorrentService::load_torrent_file(const std::string& path) { impl_->load_torrent_file(path); }
+void TorrentService::load_torrent_file(const std::string& path) {
+  std::lock_guard lock(mutex_);
+  impl_->load_torrent_file(path);
+}
 
-void TorrentService::load_magnet(const std::string& magnet) { impl_->load_magnet(magnet); }
+void TorrentService::load_magnet(const std::string& magnet) {
+  std::lock_guard lock(mutex_);
+  impl_->load_magnet(magnet);
+}
 
-void TorrentService::process_alerts() { impl_->process_alerts(); }
+void TorrentService::process_alerts() {
+  std::lock_guard lock(mutex_);
+  impl_->process_alerts();
+}
 
-void TorrentService::reset() { impl_->reset(); }
+void TorrentService::reset() {
+  std::lock_guard lock(mutex_);
+  impl_->reset();
+}
 
-void TorrentService::set_cache_limit_mib(int limit_mib) { impl_->set_cache_limit_mib(limit_mib); }
+void TorrentService::set_suspended(bool suspended) {
+  std::lock_guard lock(mutex_);
+  impl_->set_suspended(suspended);
+}
+
+void TorrentService::network_changed() {
+  std::lock_guard lock(mutex_);
+  impl_->network_changed();
+}
+
+void TorrentService::set_cache_limit_mib(int limit_mib) {
+  std::lock_guard lock(mutex_);
+  impl_->set_cache_limit_mib(limit_mib);
+}
 
 void TorrentService::set_runtime_settings(const TorrentRuntimeSettings& settings) {
+  std::lock_guard lock(mutex_);
   impl_->set_runtime_settings(settings);
 }
 
-const TorrentSnapshot& TorrentService::snapshot() const { return impl_->snapshot(); }
+TorrentSnapshot TorrentService::snapshot() const {
+  std::lock_guard lock(mutex_);
+  return impl_->snapshot();
+}
 
 std::string TorrentService::stream_uri_for_file(int file_index) const {
+  std::lock_guard lock(mutex_);
   return impl_->stream_uri_for_file(file_index);
 }
 
 std::unique_ptr<TorrentStreamReader> TorrentService::open_torrent_stream(const std::string& uri,
                                                                          std::string& error) {
+  std::lock_guard lock(mutex_);
   return impl_->open_torrent_stream(uri, error);
 }
 

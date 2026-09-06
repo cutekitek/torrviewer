@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -29,7 +30,7 @@ struct MemoryDiskCacheStatus {
 class MemoryDiskIO final : public libtorrent::disk_interface,
                            public libtorrent::buffer_allocator_interface {
 public:
-  explicit MemoryDiskIO(libtorrent::io_context& io_context);
+  explicit MemoryDiskIO(libtorrent::io_context& io_context, std::uint64_t session_id = 0);
   MemoryDiskIO(const MemoryDiskIO&) = delete;
   MemoryDiskIO& operator=(const MemoryDiskIO&) = delete;
   ~MemoryDiskIO() override;
@@ -37,6 +38,8 @@ public:
   std::int64_t bytes_used() const;
   CachePolicy cache_policy() const;
   void set_cache_policy(CachePolicy policy);
+  std::optional<libtorrent::storage_index_t> storage_for_hash(libtorrent::sha1_hash hash) const;
+  std::uint64_t session_id() const { return session_id_; }
   PieceWindow update_retained_window(libtorrent::storage_index_t storage,
                                      std::int64_t torrent_byte_offset);
   void set_retained_window(libtorrent::storage_index_t storage, PieceWindow window);
@@ -49,49 +52,51 @@ public:
                                          std::shared_ptr<void> const& torrent) override;
   void remove_torrent(libtorrent::storage_index_t storage) override;
 
-  void async_read(libtorrent::storage_index_t storage, libtorrent::peer_request const& request,
-                  std::function<void(libtorrent::disk_buffer_holder,
-                                     libtorrent::storage_error const&)> handler,
-                  libtorrent::disk_job_flags_t flags = {}) override;
+  void async_read(
+      libtorrent::storage_index_t storage, libtorrent::peer_request const& request,
+      std::function<void(libtorrent::disk_buffer_holder, libtorrent::storage_error const&)> handler,
+      libtorrent::disk_job_flags_t flags = {}) override;
   bool async_write(libtorrent::storage_index_t storage, libtorrent::peer_request const& request,
                    char const* buffer, std::shared_ptr<libtorrent::disk_observer> observer,
                    std::function<void(libtorrent::storage_error const&)> handler,
                    libtorrent::disk_job_flags_t flags = {}) override;
   void async_hash(libtorrent::storage_index_t storage, libtorrent::piece_index_t piece,
-                  libtorrent::span<libtorrent::sha256_hash> v2,
-                  libtorrent::disk_job_flags_t flags,
+                  libtorrent::span<libtorrent::sha256_hash> v2, libtorrent::disk_job_flags_t flags,
                   std::function<void(libtorrent::piece_index_t, libtorrent::sha1_hash const&,
-                                     libtorrent::storage_error const&)> handler) override;
-  void async_hash2(libtorrent::storage_index_t storage, libtorrent::piece_index_t piece,
-                   int offset, libtorrent::disk_job_flags_t flags,
+                                     libtorrent::storage_error const&)>
+                      handler) override;
+  void async_hash2(libtorrent::storage_index_t storage, libtorrent::piece_index_t piece, int offset,
+                   libtorrent::disk_job_flags_t flags,
                    std::function<void(libtorrent::piece_index_t, libtorrent::sha256_hash const&,
-                                      libtorrent::storage_error const&)> handler) override;
+                                      libtorrent::storage_error const&)>
+                       handler) override;
 
   void async_move_storage(libtorrent::storage_index_t storage, std::string path,
                           libtorrent::move_flags_t flags,
                           std::function<void(libtorrent::status_t, std::string const&,
-                                             libtorrent::storage_error const&)> handler) override;
+                                             libtorrent::storage_error const&)>
+                              handler) override;
   void async_release_files(libtorrent::storage_index_t storage,
                            std::function<void()> handler = std::function<void()>()) override;
-  void async_check_files(libtorrent::storage_index_t storage,
-                         libtorrent::add_torrent_params const* resume_data,
-                         libtorrent::aux::vector<std::string, libtorrent::file_index_t> links,
-                         std::function<void(libtorrent::status_t,
-                                            libtorrent::storage_error const&)> handler) override;
+  void async_check_files(
+      libtorrent::storage_index_t storage, libtorrent::add_torrent_params const* resume_data,
+      libtorrent::aux::vector<std::string, libtorrent::file_index_t> links,
+      std::function<void(libtorrent::status_t, libtorrent::storage_error const&)> handler) override;
   void async_stop_torrent(libtorrent::storage_index_t storage,
                           std::function<void()> handler = std::function<void()>()) override;
   void async_rename_file(libtorrent::storage_index_t storage, libtorrent::file_index_t index,
                          std::string name,
                          std::function<void(std::string const&, libtorrent::file_index_t,
-                                            libtorrent::storage_error const&)> handler) override;
+                                            libtorrent::storage_error const&)>
+                             handler) override;
   void async_delete_files(libtorrent::storage_index_t storage, libtorrent::remove_flags_t options,
                           std::function<void(libtorrent::storage_error const&)> handler) override;
   void async_set_file_priority(
       libtorrent::storage_index_t storage,
       libtorrent::aux::vector<libtorrent::download_priority_t, libtorrent::file_index_t> priorities,
-      std::function<void(
-          libtorrent::storage_error const&,
-          libtorrent::aux::vector<libtorrent::download_priority_t, libtorrent::file_index_t>)>
+      std::function<
+          void(libtorrent::storage_error const&,
+               libtorrent::aux::vector<libtorrent::download_priority_t, libtorrent::file_index_t>)>
           handler) override;
   void async_clear_piece(libtorrent::storage_index_t storage, libtorrent::piece_index_t piece,
                          std::function<void(libtorrent::piece_index_t)> handler) override;
@@ -107,6 +112,7 @@ public:
 private:
   class Impl;
   std::unique_ptr<Impl> impl_;
+  const std::uint64_t session_id_;
 };
 
 std::unique_ptr<libtorrent::disk_interface>
@@ -114,11 +120,13 @@ create_memory_disk_io(libtorrent::io_context& io_context,
                       libtorrent::settings_interface const& settings,
                       libtorrent::counters& counters);
 
-void set_memory_disk_cache_policy(CachePolicy policy);
-PieceWindow update_memory_disk_retained_window(std::int64_t torrent_byte_offset);
-MemoryDiskCacheStatus memory_disk_cache_status();
-bool read_memory_disk_bytes(libtorrent::piece_index_t piece, int offset, int length,
-                            char* buffer);
+std::uint64_t next_memory_disk_session_id();
+void set_memory_disk_cache_policy(std::uint64_t session, CachePolicy policy);
+PieceWindow update_memory_disk_retained_window(std::uint64_t session, libtorrent::sha1_hash hash,
+                                               std::int64_t torrent_byte_offset);
+MemoryDiskCacheStatus memory_disk_cache_status(std::uint64_t session, libtorrent::sha1_hash hash);
+bool read_memory_disk_bytes(std::uint64_t session, libtorrent::sha1_hash hash,
+                            libtorrent::piece_index_t piece, int offset, int length, char* buffer);
 
 } // namespace torrview
 #endif

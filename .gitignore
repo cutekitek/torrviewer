@@ -1,6 +1,15 @@
 build/
 build-*/
 .cache/
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/release-signing.properties
+*.keystore
+*.jks
+*.p12
+android/**/build/
+scripts/__pycache__/
 compile_commands.json
 *.torrent
 subprojects/libtorrent-rasterbar/

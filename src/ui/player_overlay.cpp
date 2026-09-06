@@ -236,7 +236,7 @@ void PlayerOverlay::draw(RenderContext& render_context) {
 
   const BasicGlApi& gl = render_context.gl_api;
   gl.viewport(0, 0, render_context.metrics.pixel_width, render_context.metrics.pixel_height);
-  player_->render(render_context.metrics);
+  player_->render(render_context.metrics.pixel_width, render_context.metrics.pixel_height);
 
   gl.viewport(0, 0, render_context.metrics.pixel_width, render_context.metrics.pixel_height);
   gl.disable(GL_DEPTH_TEST);

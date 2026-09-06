@@ -40,3 +40,9 @@ The executable is written to
 `build-dev/src/dev.exe`. Run it from the same MSYS2 shell so the matching
 runtime DLLs are available. It is a console application so development logs
 remain visible.
+
+## Android development on Windows
+
+The Compose Android/TV application uses Gradle for its Android package and Meson for
+its shared C++ library. See [Android builds](android.md) for Windows NDK and WSL
+dependency-build instructions. Desktop target commands in this guide are unchanged.

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "torrent_stream.hpp"
-#include "window_state.hpp"
+#include <memory>
 
 #include <cstddef>
 #include <cstdint>
@@ -9,9 +9,10 @@
 #include <vector>
 
 struct mpv_handle;
-struct mpv_render_context;
 
 namespace torrview {
+
+class MpvPresentation;
 
 struct AudioTrackInfo {
   int64_t id = -1;
@@ -52,6 +53,11 @@ struct PlaybackDiagnostics {
   AudioPlaybackMetadata audio;
 };
 
+struct BufferedTimeRange {
+  double start = 0.0;
+  double end = 0.0;
+};
+
 struct PlaybackSnapshot {
   bool available = false;
   bool initialized = false;
@@ -60,6 +66,7 @@ struct PlaybackSnapshot {
   bool eof_reached = false;
   double time_pos = 0.0;
   double duration = 0.0;
+  std::vector<BufferedTimeRange> buffered_ranges;
   double volume = 100.0;
   int video_tracks = 0;
   int audio_tracks = 0;
@@ -67,15 +74,18 @@ struct PlaybackSnapshot {
   int active_audio_index = -1;
   std::vector<int64_t> audio_track_ids;
   std::vector<AudioTrackInfo> audio_track_list;
+  std::vector<AudioTrackInfo> subtitle_track_list;
+  int active_subtitle_index = -1;
   PlaybackDiagnostics diagnostics;
   std::string media_title;
   std::string path;
   std::string status;
+  std::string error;
 };
 
 class MpvPlayer final {
 public:
-  MpvPlayer() = default;
+  MpvPlayer();
   MpvPlayer(const MpvPlayer&) = delete;
   MpvPlayer& operator=(const MpvPlayer&) = delete;
   ~MpvPlayer();
@@ -83,9 +93,12 @@ public:
   bool available() const;
   void set_torrent_stream_provider(TorrentStreamProvider* provider);
   void initialize();
-  void load_file(const std::string& path);
+  void load_file(const std::string& path, bool autoplay = true);
   void process_events();
-  void render(const WindowMetrics& metrics);
+  void render(int width, int height);
+  void set_surface(void* surface, int width = 0, int height = 0);
+  void select_subtitle_track(int index);
+  void set_subtitle_font_directory(std::string directory);
   void report_swap();
 
   void toggle_pause();
@@ -112,10 +125,11 @@ private:
   void set_status_from_error(const char* action, int code);
 
   mpv_handle* handle_ = nullptr;
-  mpv_render_context* render_context_ = nullptr;
+  std::unique_ptr<MpvPresentation> presentation_;
   TorrentStreamProvider* torrent_stream_provider_ = nullptr;
   bool torrent_stream_protocol_registered_ = false;
   PlaybackSnapshot snapshot_;
+  std::string subtitle_font_directory_;
 };
 
 } // namespace torrview

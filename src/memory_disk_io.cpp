@@ -15,6 +15,7 @@
 #include <boost/system/errc.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -36,8 +37,7 @@ struct WriteRange {
   int end = 0;
 };
 
-lt::storage_error make_storage_error(boost::system::errc::errc_t error,
-                                     lt::operation_t operation) {
+lt::storage_error make_storage_error(boost::system::errc::errc_t error, lt::operation_t operation) {
   return lt::storage_error(lt::error_code(error, boost::system::generic_category()), operation);
 }
 
@@ -45,13 +45,9 @@ lt::storage_error make_eof_error(lt::operation_t operation) {
   return lt::storage_error(lt::error_code(boost::asio::error::eof), operation);
 }
 
-lt::sha1_hash missing_piece_hash() {
-  return (lt::sha1_hash::max)();
-}
+lt::sha1_hash missing_piece_hash() { return (lt::sha1_hash::max)(); }
 
-lt::sha256_hash missing_block_hash() {
-  return (lt::sha256_hash::max)();
-}
+lt::sha256_hash missing_block_hash() { return (lt::sha256_hash::max)(); }
 
 void merge_written_range(std::vector<WriteRange>& ranges, WriteRange next) {
   if (next.begin >= next.end) {
@@ -59,10 +55,9 @@ void merge_written_range(std::vector<WriteRange>& ranges, WriteRange next) {
   }
 
   ranges.push_back(next);
-  std::sort(ranges.begin(), ranges.end(),
-            [](const WriteRange& left, const WriteRange& right) {
-              return left.begin < right.begin;
-            });
+  std::sort(ranges.begin(), ranges.end(), [](const WriteRange& left, const WriteRange& right) {
+    return left.begin < right.begin;
+  });
 
   std::vector<WriteRange> merged;
   merged.reserve(ranges.size());
@@ -144,8 +139,8 @@ public:
       return 0;
     }
     if (buffer == nullptr && request.length > 0) {
-      error = make_storage_error(boost::system::errc::invalid_argument,
-                                 lt::operation_t::file_write);
+      error =
+          make_storage_error(boost::system::errc::invalid_argument, lt::operation_t::file_write);
       return 0;
     }
 
@@ -181,8 +176,7 @@ public:
 
     const auto length = static_cast<std::size_t>(request.length);
     auto* copy = new char[length];
-    std::memcpy(copy, found->second.bytes.data() + request.start,
-                length);
+    std::memcpy(copy, found->second.bytes.data() + request.start, length);
     return lt::disk_buffer_holder(allocator, copy, request.length);
   }
 
@@ -204,8 +198,7 @@ public:
     return true;
   }
 
-  [[nodiscard]] lt::sha1_hash hash(lt::piece_index_t piece,
-                                   lt::span<lt::sha256_hash> block_hashes,
+  [[nodiscard]] lt::sha1_hash hash(lt::piece_index_t piece, lt::span<lt::sha256_hash> block_hashes,
                                    lt::disk_job_flags_t flags, lt::storage_error& error) {
     lt::storage_error read_error;
     const MemoryPiece* data = full_piece(piece, read_error, lt::operation_t::file_read);
@@ -242,8 +235,7 @@ public:
                                       lt::storage_error& error) {
     const int size = piece_size(piece);
     if (offset < 0 || offset >= size) {
-      error = make_storage_error(boost::system::errc::invalid_argument,
-                                 lt::operation_t::file_read);
+      error = make_storage_error(boost::system::errc::invalid_argument, lt::operation_t::file_read);
       return {};
     }
 
@@ -307,9 +299,7 @@ private:
 
   [[nodiscard]] int total_pieces() const { return static_cast<int>(files_.end_piece()); }
 
-  [[nodiscard]] int piece_to_int(lt::piece_index_t piece) const {
-    return static_cast<int>(piece);
-  }
+  [[nodiscard]] int piece_to_int(lt::piece_index_t piece) const { return static_cast<int>(piece); }
 
   void record_miss(lt::piece_index_t piece) {
     if (evicted_pieces_.find(piece) != evicted_pieces_.end()) {
@@ -458,7 +448,17 @@ public:
     } else {
       storages_[index] = std::move(storage);
     }
+    hashes_[index] = params.info_hash;
     return lt::storage_holder(index, owner);
+  }
+
+  std::optional<lt::storage_index_t> storage_for_hash(lt::sha1_hash hash) const {
+    std::lock_guard lock(mutex_);
+    for (const auto& [index, stored] : hashes_) {
+      if (stored == hash)
+        return index;
+    }
+    return std::nullopt;
   }
 
   void remove_torrent(lt::storage_index_t index) {
@@ -469,6 +469,7 @@ public:
     }
     bytes_used_ -= storage->clear_all();
     storages_[index].reset();
+    hashes_.erase(index);
     free_slots_.push_back(index);
   }
 
@@ -487,9 +488,8 @@ public:
       }
     }
 
-    lt::post(io_context_, [handler = std::move(handler), buffer = std::move(buffer), error]() mutable {
-      handler(std::move(buffer), error);
-    });
+    lt::post(io_context_, [handler = std::move(handler), buffer = std::move(buffer),
+                           error]() mutable { handler(std::move(buffer), error); });
   }
 
   bool async_write(lt::storage_index_t index, const lt::peer_request& request, const char* buffer,
@@ -512,10 +512,11 @@ public:
     return false;
   }
 
-  void async_hash(lt::storage_index_t index, lt::piece_index_t piece,
-                  lt::span<lt::sha256_hash> block_hashes, lt::disk_job_flags_t flags,
-                  std::function<void(lt::piece_index_t, lt::sha1_hash const&,
-                                     lt::storage_error const&)> handler) {
+  void
+  async_hash(lt::storage_index_t index, lt::piece_index_t piece,
+             lt::span<lt::sha256_hash> block_hashes, lt::disk_job_flags_t flags,
+             std::function<void(lt::piece_index_t, lt::sha1_hash const&, lt::storage_error const&)>
+                 handler) {
     lt::storage_error error;
     lt::sha1_hash hash;
     {
@@ -528,14 +529,14 @@ public:
       }
     }
 
-    lt::post(io_context_, [handler = std::move(handler), piece, hash, error]() {
-      handler(piece, hash, error);
-    });
+    lt::post(io_context_,
+             [handler = std::move(handler), piece, hash, error]() { handler(piece, hash, error); });
   }
 
-  void async_hash2(lt::storage_index_t index, lt::piece_index_t piece, int offset,
-                   std::function<void(lt::piece_index_t, lt::sha256_hash const&,
-                                      lt::storage_error const&)> handler) {
+  void async_hash2(
+      lt::storage_index_t index, lt::piece_index_t piece, int offset,
+      std::function<void(lt::piece_index_t, lt::sha256_hash const&, lt::storage_error const&)>
+          handler) {
     lt::storage_error error;
     lt::sha256_hash hash;
     {
@@ -548,9 +549,8 @@ public:
       }
     }
 
-    lt::post(io_context_, [handler = std::move(handler), piece, hash, error]() {
-      handler(piece, hash, error);
-    });
+    lt::post(io_context_,
+             [handler = std::move(handler), piece, hash, error]() { handler(piece, hash, error); });
   }
 
   void delete_files(lt::storage_index_t index,
@@ -619,12 +619,13 @@ private:
   mutable std::mutex mutex_;
   lt::aux::vector<std::unique_ptr<MemoryTorrentStorage>, lt::storage_index_t> storages_;
   std::vector<lt::storage_index_t> free_slots_;
+  std::map<lt::storage_index_t, lt::sha1_hash> hashes_;
   CachePolicy policy_;
   std::int64_t bytes_used_ = 0;
 };
 
-MemoryDiskIO::MemoryDiskIO(lt::io_context& io_context)
-    : impl_(std::make_unique<Impl>(io_context)) {
+MemoryDiskIO::MemoryDiskIO(lt::io_context& io_context, std::uint64_t session_id)
+    : impl_(std::make_unique<Impl>(io_context)), session_id_(session_id) {
   std::lock_guard lock(registry_mutex);
   registry.push_back(this);
 }
@@ -639,6 +640,10 @@ std::int64_t MemoryDiskIO::bytes_used() const { return impl_->bytes_used(); }
 CachePolicy MemoryDiskIO::cache_policy() const { return impl_->cache_policy(); }
 
 void MemoryDiskIO::set_cache_policy(CachePolicy policy) { impl_->set_cache_policy(policy); }
+
+std::optional<lt::storage_index_t> MemoryDiskIO::storage_for_hash(lt::sha1_hash hash) const {
+  return impl_->storage_for_hash(hash);
+}
 
 PieceWindow MemoryDiskIO::update_retained_window(lt::storage_index_t storage,
                                                  std::int64_t torrent_byte_offset) {
@@ -664,10 +669,14 @@ bool MemoryDiskIO::read_bytes(lt::storage_index_t storage, lt::piece_index_t pie
 
 lt::storage_holder MemoryDiskIO::new_torrent(lt::storage_params const& params,
                                              std::shared_ptr<void> const&) {
+  std::lock_guard lock(registry_mutex);
   return impl_->new_torrent(params, *this);
 }
 
-void MemoryDiskIO::remove_torrent(lt::storage_index_t storage) { impl_->remove_torrent(storage); }
+void MemoryDiskIO::remove_torrent(lt::storage_index_t storage) {
+  std::lock_guard lock(registry_mutex);
+  impl_->remove_torrent(storage);
+}
 
 void MemoryDiskIO::async_read(
     lt::storage_index_t storage, lt::peer_request const& request,
@@ -714,9 +723,8 @@ void MemoryDiskIO::async_check_files(
     lt::storage_index_t, lt::add_torrent_params const*,
     lt::aux::vector<std::string, lt::file_index_t>,
     std::function<void(lt::status_t, lt::storage_error const&)> handler) {
-  lt::post(impl_->io_context(), [handler = std::move(handler)]() {
-    handler(lt::status_t::no_error, {});
-  });
+  lt::post(impl_->io_context(),
+           [handler = std::move(handler)]() { handler(lt::status_t::no_error, {}); });
 }
 
 void MemoryDiskIO::async_stop_torrent(lt::storage_index_t, std::function<void()> handler) {
@@ -731,17 +739,16 @@ void MemoryDiskIO::async_rename_file(
   });
 }
 
-void MemoryDiskIO::async_delete_files(
-    lt::storage_index_t storage, lt::remove_flags_t,
-    std::function<void(lt::storage_error const&)> handler) {
+void MemoryDiskIO::async_delete_files(lt::storage_index_t storage, lt::remove_flags_t,
+                                      std::function<void(lt::storage_error const&)> handler) {
   impl_->delete_files(storage, std::move(handler));
 }
 
 void MemoryDiskIO::async_set_file_priority(
-    lt::storage_index_t,
-    lt::aux::vector<lt::download_priority_t, lt::file_index_t> priorities,
+    lt::storage_index_t, lt::aux::vector<lt::download_priority_t, lt::file_index_t> priorities,
     std::function<void(lt::storage_error const&,
-                       lt::aux::vector<lt::download_priority_t, lt::file_index_t>)> handler) {
+                       lt::aux::vector<lt::download_priority_t, lt::file_index_t>)>
+        handler) {
   lt::post(impl_->io_context(),
            [handler = std::move(handler), priorities = std::move(priorities)]() mutable {
              handler({}, std::move(priorities));
@@ -765,49 +772,60 @@ void MemoryDiskIO::settings_updated() {}
 
 void MemoryDiskIO::free_disk_buffer(char* buffer) { delete[] buffer; }
 
-std::unique_ptr<lt::disk_interface> create_memory_disk_io(lt::io_context& io_context,
-                                                          lt::settings_interface const&,
-                                                          lt::counters&) {
+std::unique_ptr<lt::disk_interface>
+create_memory_disk_io(lt::io_context& io_context, lt::settings_interface const&, lt::counters&) {
   return std::make_unique<MemoryDiskIO>(io_context);
 }
 
-void set_memory_disk_cache_policy(CachePolicy policy) {
+std::uint64_t next_memory_disk_session_id() {
+  static std::atomic<std::uint64_t> next{1};
+  return next.fetch_add(1, std::memory_order_relaxed);
+}
+
+void set_memory_disk_cache_policy(std::uint64_t session, CachePolicy policy) {
   std::lock_guard lock(registry_mutex);
   for (MemoryDiskIO* disk : registry) {
-    if (disk != nullptr) {
+    if (disk != nullptr && disk->session_id() == session) {
       disk->set_cache_policy(policy);
     }
   }
 }
 
-PieceWindow update_memory_disk_retained_window(std::int64_t torrent_byte_offset) {
+PieceWindow update_memory_disk_retained_window(std::uint64_t session, lt::sha1_hash hash,
+                                               std::int64_t torrent_byte_offset) {
   std::lock_guard lock(registry_mutex);
   PieceWindow window;
   for (MemoryDiskIO* disk : registry) {
-    if (disk != nullptr) {
-      window = disk->update_retained_window(lt::storage_index_t{0}, torrent_byte_offset);
+    if (disk != nullptr && disk->session_id() == session) {
+      if (const auto storage = disk->storage_for_hash(hash)) {
+        window = disk->update_retained_window(*storage, torrent_byte_offset);
+      }
     }
   }
   return window;
 }
 
-MemoryDiskCacheStatus memory_disk_cache_status() {
+MemoryDiskCacheStatus memory_disk_cache_status(std::uint64_t session, lt::sha1_hash hash) {
   std::lock_guard lock(registry_mutex);
   MemoryDiskCacheStatus status;
   for (MemoryDiskIO* disk : registry) {
-    if (disk != nullptr) {
-      status = disk->cache_status(lt::storage_index_t{0});
+    if (disk != nullptr && disk->session_id() == session) {
+      if (const auto storage = disk->storage_for_hash(hash)) {
+        status = disk->cache_status(*storage);
+      }
     }
   }
   return status;
 }
 
-bool read_memory_disk_bytes(lt::piece_index_t piece, int offset, int length, char* buffer) {
+bool read_memory_disk_bytes(std::uint64_t session, lt::sha1_hash hash, lt::piece_index_t piece,
+                            int offset, int length, char* buffer) {
   std::lock_guard lock(registry_mutex);
   for (MemoryDiskIO* disk : registry) {
-    if (disk != nullptr &&
-        disk->read_bytes(lt::storage_index_t{0}, piece, offset, length, buffer)) {
-      return true;
+    if (disk != nullptr && disk->session_id() == session) {
+      if (const auto storage = disk->storage_for_hash(hash)) {
+        return disk->read_bytes(*storage, piece, offset, length, buffer);
+      }
     }
   }
   return false;

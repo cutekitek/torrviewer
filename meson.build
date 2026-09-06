@@ -23,7 +23,7 @@ c = meson.get_compiler('c')
 cpp = meson.get_compiler('cpp')
 host_platform = host_machine.system()
 build_target = get_option('build_target')
-static_build = build_target == 'prod'
+static_build = build_target == 'prod' and host_platform != 'android'
 static_linkage = static_build
 gcc16_static_cpp_workaround = static_build and host_platform == 'windows' \
   and cpp.get_id() == 'gcc' and cpp.version().version_compare('>=16')
@@ -72,6 +72,15 @@ if static_build
   if gcc16_static_cpp_workaround
     add_project_arguments('-D_GLIBCXX_ASSERTIONS', language: 'cpp')
   endif
+endif
+
+if host_platform == 'android'
+  subdir('android/native')
+  subdir('src/core')
+  subdir('android/native/library')
+  subdir('tests')
+  summary({'Platform': 'Android', 'Native library': 'libtorrview.so'}, section: 'Torrview')
+  subdir_done()
 endif
 
 if not fs.exists(meson.project_source_root() / 'third_party' / 'clay' / 'clay.h')
@@ -501,7 +510,15 @@ configure_file(
 
 config_inc = include_directories('.')
 
+core_deps = []
+foreach dep : [mpv_dep, libtorrent_dep]
+  if dep.found()
+    core_deps += dep
+  endif
+endforeach
+subdir('src/core')
 subdir('src')
+subdir('tests')
 
 summary({
   'Build target': build_target,

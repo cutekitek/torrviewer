@@ -70,3 +70,9 @@ Use `meson configure` to list project options before configuration, or
 `meson configure <build-directory>` afterward. Windows-specific details are
 documented in [Windows development build](windows-dev-build.md) and
 [Windows production build](windows-static-build.md).
+
+## Android
+
+For the Jetpack Compose Android/TV application and shared native engine, see
+[Android builds](android.md). Desktop builds continue to use the `dev`/`prod`
+and `run-dev`/`run-prod` Meson targets.

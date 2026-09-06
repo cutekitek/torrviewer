@@ -59,3 +59,9 @@ After the initial setup, `meson compile` automatically regenerates the build
 files when Meson inputs change. Use `meson configure build-prod` to
 view or change options, and use `meson setup --wipe build-prod` when
 switching compilers or dependency sources.
+
+## Android development on Windows
+
+The Compose Android/TV application uses Gradle for its Android package and Meson for
+its shared C++ library. See [Android builds](android.md) for Windows NDK and WSL
+dependency-build instructions. Desktop target commands in this guide are unchanged.

@@ -1,8 +1,12 @@
 #include "logger.hpp"
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
 #include <algorithm>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <ctime>
 #include <iomanip>
@@ -50,7 +54,7 @@ LogLevel threshold() {
   return level;
 }
 
-const char* level_label(LogLevel level) {
+[[maybe_unused]] const char* level_label(LogLevel level) {
   switch (level) {
   case LogLevel::debug:
     return "debug";
@@ -80,7 +84,7 @@ const char* basename(const char* path) {
   return name;
 }
 
-std::string timestamp() {
+[[maybe_unused]] std::string timestamp() {
   const auto now = std::chrono::system_clock::now();
   const auto time = std::chrono::system_clock::to_time_t(now);
   std::tm local_time{};
@@ -103,8 +107,17 @@ bool log_enabled(LogLevel level) {
 
 void log_message(LogLevel level, const char* file, int line, std::string_view message) {
   std::lock_guard lock(log_mutex);
+#if defined(__ANDROID__)
+  const int priority = level == LogLevel::error     ? ANDROID_LOG_ERROR
+                       : level == LogLevel::warning ? ANDROID_LOG_WARN
+                       : level == LogLevel::debug   ? ANDROID_LOG_DEBUG
+                                                    : ANDROID_LOG_INFO;
+  const std::string text(message);
+  __android_log_print(priority, "Torrview", "%s:%d %s", basename(file), line, text.c_str());
+#else
   std::cerr << timestamp() << " [" << level_label(level) << "] " << basename(file) << ':' << line
             << " " << message << '\n';
+#endif
 }
 
 } // namespace torrview

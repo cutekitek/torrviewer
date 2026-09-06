@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -74,7 +75,7 @@ struct TorrentRuntimeSettings {
 
 class TorrentService final : public TorrentStreamProvider {
 public:
-  TorrentService();
+  explicit TorrentService(std::string metadata_directory = {});
   TorrentService(const TorrentService&) = delete;
   TorrentService& operator=(const TorrentService&) = delete;
   ~TorrentService();
@@ -84,15 +85,18 @@ public:
   void load_magnet(const std::string& magnet);
   void process_alerts();
   void reset();
+  void set_suspended(bool suspended);
+  void network_changed();
   void set_cache_limit_mib(int limit_mib);
   void set_runtime_settings(const TorrentRuntimeSettings& settings);
-  const TorrentSnapshot& snapshot() const;
+  TorrentSnapshot snapshot() const;
   std::string stream_uri_for_file(int file_index) const;
   std::unique_ptr<TorrentStreamReader> open_torrent_stream(const std::string& uri,
                                                            std::string& error) override;
 
 private:
   class Impl;
+  mutable std::mutex mutex_;
   std::unique_ptr<Impl> impl_;
 };
 
