@@ -53,6 +53,19 @@ int main() {
       std::this_thread::sleep_for(10ms);
     }
     require(!uri.empty(), "Torrent was not added");
+    const auto saved = service.snapshot();
+    require(saved.metadata && !saved.metadata->empty(), "Metadata not exported");
+    service.reset();
+    std::filesystem::remove(path);
+    service.load_torrent_data(*saved.metadata, path.string());
+    uri.clear();
+    for (int i = 0; i < 300 && uri.empty(); ++i) {
+      service.process_alerts();
+      uri = service.stream_uri_for_file(0);
+      std::this_thread::sleep_for(10ms);
+    }
+    require(!uri.empty(), "Saved metadata failed to restore after deleting source file");
+    require(service.snapshot().identity == saved.identity, "Torrent identity changed on restore");
     std::string error;
     auto reader = service.open_torrent_stream(uri, error);
     require(reader != nullptr, error.c_str());

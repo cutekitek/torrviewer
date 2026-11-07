@@ -38,6 +38,8 @@
 #include <libtorrent/add_torrent_params.hpp>
 #include <libtorrent/alert.hpp>
 #include <libtorrent/alert_types.hpp>
+#include <libtorrent/bencode.hpp>
+#include <libtorrent/create_torrent.hpp>
 #include <libtorrent/download_priority.hpp>
 #include <libtorrent/error_code.hpp>
 #include <libtorrent/file_storage.hpp>
@@ -1345,6 +1347,42 @@ public:
 
   void network_changed() { session_.reopen_network_sockets(); }
 
+  void capture_metadata(const lt::torrent_info& info) {
+    std::ostringstream identity;
+    identity << info.info_hashes().get_best();
+    snapshot_.identity = identity.str();
+    auto bytes = std::make_shared<std::vector<char>>();
+    lt::create_torrent torrent(info);
+    lt::bencode(std::back_inserter(*bytes), torrent.generate());
+    snapshot_.metadata = std::move(bytes);
+  }
+
+  void load_torrent_data(const std::vector<char>& data, const std::string& source) {
+    clear_current();
+    if (data.empty() || data.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+      fail("Saved torrent metadata is empty or too large");
+      return;
+    }
+    snapshot_.source = source;
+    lt::error_code error;
+    auto info =
+        std::make_shared<lt::torrent_info>(data.data(), static_cast<int>(data.size()), error);
+    if (error) {
+      fail("Invalid saved metadata: " + error.message());
+      return;
+    }
+    capture_metadata(*info);
+    snapshot_.name = info->name();
+    set_files(extract_files(*info));
+    snapshot_.has_metadata = true;
+    snapshot_.state = TorrentLoadState::ready;
+    snapshot_.status = "Metadata loaded";
+    lt::add_torrent_params params;
+    params.ti = std::move(info);
+    configure_metadata_only_add(params, runtime_settings_.max_connections, metadata_directory_);
+    session_.async_add_torrent(std::move(params));
+  }
+
   void load_torrent_file(const std::string& path) {
     clear_current();
     snapshot_.source = path;
@@ -1358,6 +1396,7 @@ public:
       return;
     }
 
+    capture_metadata(*info);
     snapshot_.name = info->name();
     set_files(extract_files(*info));
     snapshot_.has_metadata = true;
@@ -1401,6 +1440,7 @@ public:
         handle_ = add->handle;
         if (handle_.is_valid()) {
           if (auto info = handle_.torrent_file(); info != nullptr && info->is_valid()) {
+            capture_metadata(*info);
             snapshot_.name = info->name();
             set_files(extract_files(*info));
             snapshot_.has_metadata = true;
@@ -1415,6 +1455,7 @@ public:
       if (auto* metadata = lt::alert_cast<lt::metadata_received_alert>(alert)) {
         handle_ = metadata->handle;
         if (auto info = handle_.torrent_file(); info != nullptr && info->is_valid()) {
+          capture_metadata(*info);
           snapshot_.name = info->name();
           set_files(extract_files(*info));
           snapshot_.has_metadata = true;
@@ -1626,6 +1667,8 @@ private:
     snapshot_.state = TorrentLoadState::error;
     snapshot_.status = "Error";
     snapshot_.error = std::move(message);
+    snapshot_.identity.clear();
+    snapshot_.metadata.reset();
     snapshot_.has_metadata = false;
     snapshot_.metadata_progress = 0.0F;
     snapshot_.files.clear();
@@ -1954,6 +1997,16 @@ bool TorrentService::available() const {
 void TorrentService::load_torrent_file(const std::string& path) {
   std::lock_guard lock(mutex_);
   impl_->load_torrent_file(path);
+}
+
+void TorrentService::load_torrent_data(const std::vector<char>& data, const std::string& source) {
+  std::lock_guard lock(mutex_);
+#if defined(TORRVIEW_HAVE_LIBTORRENT)
+  impl_->load_torrent_data(data, source);
+#else
+  (void)data;
+  impl_->load_torrent_file(source);
+#endif
 }
 
 void TorrentService::load_magnet(const std::string& magnet) {

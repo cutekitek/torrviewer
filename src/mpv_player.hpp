@@ -62,6 +62,9 @@ struct PlaybackSnapshot {
   bool available = false;
   bool initialized = false;
   bool loaded = false;
+  bool file_ready = false;
+  bool position_valid = false;
+  bool seeking = false;
   bool paused = true;
   bool eof_reached = false;
   double time_pos = 0.0;
@@ -93,7 +96,7 @@ public:
   bool available() const;
   void set_torrent_stream_provider(TorrentStreamProvider* provider);
   void initialize();
-  void load_file(const std::string& path, bool autoplay = true);
+  void load_file(const std::string& path, bool autoplay = true, double start_seconds = 0.0);
   void process_events();
   void render(int width, int height);
   void set_surface(void* surface, int width = 0, int height = 0);
@@ -130,6 +133,8 @@ private:
   bool torrent_stream_protocol_registered_ = false;
   PlaybackSnapshot snapshot_;
   std::string subtitle_font_directory_;
+  double pending_start_ = 0.0;
+  bool pending_autoplay_ = true;
 };
 
 } // namespace torrview

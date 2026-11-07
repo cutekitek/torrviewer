@@ -107,6 +107,8 @@ constexpr auto render_frame_interval = std::chrono::milliseconds(16);
 } // namespace
 
 Application::~Application() {
+  save_progress();
+  library_.reset();
   player_.reset();
 
   if (context_ != nullptr) {
@@ -137,6 +139,9 @@ void Application::initialize() {
   sdl_initialized_ = true;
   const char* base_path = SDL_GetBasePath();
   Settings::instance().load(base_path);
+  const auto library_path =
+      (Settings::instance().path().parent_path() / "torrview.sqlite").u8string();
+  library_ = std::make_unique<Library>(std::string(library_path.begin(), library_path.end()));
 
   set_gl_attribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
   set_gl_attribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -203,10 +208,9 @@ void Application::run() {
     draw();
     const auto frame_elapsed = Clock::now() - frame_started;
     if (frame_elapsed < render_frame_interval) {
-      SDL_Delay(static_cast<Uint32>(
-          std::chrono::duration_cast<std::chrono::milliseconds>(render_frame_interval -
-                                                                frame_elapsed)
-              .count()));
+      SDL_Delay(static_cast<Uint32>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        render_frame_interval - frame_elapsed)
+                                        .count()));
     }
   }
 }
@@ -289,8 +293,9 @@ void Application::mouse_button(const SDL_MouseButtonEvent& button) {
 void Application::mouse_wheel(const SDL_MouseWheelEvent& wheel) {
   pointer_.x = wheel.mouse_x;
   pointer_.y = wheel.mouse_y;
-  pointer_.wheel_x += wheel.x;
-  pointer_.wheel_y += wheel.y;
+  const float direction = wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0F : 1.0F;
+  pointer_.wheel_x += wheel.x * direction;
+  pointer_.wheel_y += wheel.y * direction;
 }
 
 void Application::drop_file(const char* path) { accept_input(parse_file_input(path)); }
@@ -336,7 +341,8 @@ void Application::initialize_text_renderer() {
   thorvg_initialized_ = true;
 
   const auto* font = resources::find("fonts/NotoSans-Regular.ttf");
-  if (font == nullptr || font->size > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+  if (font == nullptr ||
+      font->size > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
     throw std::runtime_error("Bundled Noto Sans font resource is missing or too large");
   }
 
@@ -378,27 +384,31 @@ void Application::initialize_clay() {
 }
 
 void Application::register_pages() {
-  ui_app_.register_page<ui::TitlePage>(
-      [this] {
-        return std::make_unique<ui::TitlePage>(*this, Settings::instance(), drag_active_,
-                                               last_input_);
-      });
-  ui_app_.register_page<ui::FileBrowserPage>(
-      [this] {
-        return std::make_unique<ui::FileBrowserPage>(*this, Settings::instance(), player_.get(),
-                                                     torrent_service_);
-      });
-  ui_app_.register_page<ui::SettingsPage>(
-      [this] {
-        return std::make_unique<ui::SettingsPage>(*this, Settings::instance(), player_.get(),
-                                                  torrent_service_);
-      });
-  ui_app_.register_page<ui::PlayerOverlay>(
-      [this] {
-        return std::make_unique<ui::PlayerOverlay>(*this, Settings::instance(), pointer_,
-                                                   clay_context_,
-                                                   player_.get(), torrent_service_);
-      });
+  ui_app_.register_page<ui::TitlePage>([this] {
+    return std::make_unique<ui::TitlePage>(*this, Settings::instance(), drag_active_, last_input_);
+  });
+  ui_app_.register_page<ui::FileBrowserPage>([this] {
+    return std::make_unique<ui::FileBrowserPage>(*this, Settings::instance(), player_.get(),
+                                                 torrent_service_);
+  });
+  ui_app_.register_page<ui::SettingsPage>([this] {
+    return std::make_unique<ui::SettingsPage>(*this, Settings::instance(), player_.get(),
+                                              torrent_service_);
+  });
+  ui_app_.register_page<ui::PlayerOverlay>([this] {
+    return std::make_unique<ui::PlayerOverlay>(*this, Settings::instance(), pointer_, clay_context_,
+                                               player_.get(), torrent_service_);
+  });
+}
+
+float Application::text_width(std::string_view value, uint16_t font_size) {
+  Clay_TextElementConfig config{};
+  config.fontSize = font_size;
+  return ui::measure_text({.length = static_cast<int32_t>(value.size()),
+                           .chars = value.data(),
+                           .baseChars = value.data()},
+                          &config, &text_measure_state_)
+      .width;
 }
 
 void Application::show_source_dialog() {
@@ -463,11 +473,18 @@ void Application::accept_input(ParsedInput input) {
     return;
   }
 
+  save_progress();
+  active_key_.clear();
+  playing_file_ = -1;
+  resume_pending_ = false;
+  metadata_saved_ = false;
+  library_status_.clear();
   last_input_ = std::move(input);
   if (last_input_->kind == InputKind::local_media_file) {
     torrent_service_.reset();
     if (player_ == nullptr || !player_->available()) {
-      TORRVIEW_LOG_ERROR("Local playback requires libmpv, but this build was configured without it");
+      TORRVIEW_LOG_ERROR(
+          "Local playback requires libmpv, but this build was configured without it");
     } else {
       try {
         player_->load_file(last_input_->value);
@@ -487,6 +504,18 @@ void Application::accept_input(ParsedInput input) {
       } else {
         torrent_service_.load_magnet(last_input_->value);
       }
+      const auto torrent = torrent_service_.snapshot();
+      if (torrent.state == TorrentLoadState::loading_metadata || torrent.has_metadata) {
+        active_key_ = torrent.identity.empty() ? "source:" + last_input_->value : torrent.identity;
+        if (!active_entry()) {
+          LibraryEntry entry;
+          entry.key = active_key_;
+          entry.source = last_input_->value;
+          entry.name = torrent.name.empty() ? "Magnet (waiting for metadata)" : torrent.name;
+          library_->entries.insert(library_->entries.begin(), std::move(entry));
+          library_->save();
+        }
+      }
       navigate<ui::FileBrowserPage>();
     } catch (const std::exception& error) {
       TORRVIEW_LOG_ERROR("Torrent metadata load failed: " << error.what());
@@ -499,6 +528,206 @@ void Application::accept_input(ParsedInput input) {
   TORRVIEW_LOG_INFO("Input: " << input_kind_label(last_input_->kind) << " - "
                               << compact_value(last_input_->value));
   update_window_title();
+}
+
+LibraryEntry* Application::active_entry() {
+  if (!library_)
+    return nullptr;
+  for (auto& entry : library_->entries)
+    if (entry.key == active_key_)
+      return &entry;
+  return nullptr;
+}
+
+void Application::save_progress() {
+  auto* entry = active_entry();
+  if (!entry || !player_ || playing_file_ < 0)
+    return;
+  const auto playback = player_->snapshot();
+  if (!playback.loaded || !playback.file_ready || !playback.path.starts_with("torrview://") ||
+      !playback.position_valid || playback.seeking || playback.duration <= 0)
+    return;
+  const auto old = entry->progress.find(playing_file_);
+  if (old != entry->progress.end() && old->second.position == playback.time_pos &&
+      old->second.duration == playback.duration && entry->last_file == playing_file_)
+    return;
+  entry->last_file = playing_file_;
+  entry->progress[playing_file_] = {playback.time_pos, playback.duration};
+  library_->save_progress(entry->key, playing_file_, entry->progress[playing_file_]);
+  progress_saved_ = Clock::now();
+}
+
+void Application::update_library() {
+  if (!library_)
+    return;
+  const auto torrent = torrent_service_.snapshot();
+  if (!metadata_saved_ && torrent.has_metadata && torrent.metadata) {
+    const auto provisional_key = active_key_;
+    active_key_ = torrent.identity;
+    if (provisional_key != active_key_) {
+      auto provisional = std::find_if(library_->entries.begin(), library_->entries.end(),
+                                      [&](const auto& e) { return e.key == provisional_key; });
+      if (provisional != library_->entries.end()) {
+        if (!active_entry()) {
+          provisional->key = active_key_;
+          if (provisional->metadata.empty())
+            provisional->name = torrent.name;
+        } else
+          library_->entries.erase(provisional);
+      }
+    }
+    auto* entry = active_entry();
+    if (!entry) {
+      LibraryEntry fresh;
+      fresh.key = active_key_;
+      fresh.name = torrent.name;
+      fresh.source = torrent.source;
+      library_->entries.insert(library_->entries.begin(), std::move(fresh));
+      entry = active_entry();
+    }
+    entry->files = torrent.files;
+    entry->metadata = *torrent.metadata;
+    metadata_saved_ = true;
+    library_->save();
+  }
+  if (resume_pending_ && torrent.has_metadata) {
+    if (auto* entry = active_entry()) {
+      int index = entry->last_file;
+      if (index < 0) {
+        for (const auto& file : entry->files)
+          if (file.likely_video) {
+            index = file.index;
+            break;
+          }
+      }
+      if (index < 0) {
+        resume_pending_ = false;
+        library_status_ = "No video files in this torrent";
+      } else if (!torrent_service_.stream_uri_for_file(index).empty()) {
+        resume_pending_ = false;
+        play_torrent_file(index);
+      }
+    }
+  }
+  if (Clock::now() - progress_saved_ >= std::chrono::seconds(1))
+    save_progress();
+}
+
+void Application::open_library(const std::string& key, bool resume) {
+  save_progress();
+  active_key_ = key;
+  auto* entry = active_entry();
+  if (!entry)
+    return;
+  last_input_ = parse_text_input(entry->source);
+  playing_file_ = -1;
+  resume_pending_ = resume;
+  metadata_saved_ = true;
+  library_status_.clear();
+  try {
+    if (player_ && player_->has_file())
+      player_->stop();
+    if (!entry->metadata.empty())
+      torrent_service_.load_torrent_data(entry->metadata, entry->source);
+    else {
+      metadata_saved_ = false;
+      if (is_magnet_link(entry->source))
+        torrent_service_.load_magnet(entry->source);
+      else
+        torrent_service_.load_torrent_file(entry->source);
+    }
+    navigate<ui::FileBrowserPage>();
+    update_window_title();
+  } catch (const std::exception& e) {
+    library_status_ = e.what();
+    resume_pending_ = false;
+  }
+}
+
+TorrentSnapshot Application::browsing_snapshot() const {
+  auto snapshot = torrent_service_.snapshot();
+  if (library_)
+    for (const auto& entry : library_->entries)
+      if (entry.key == active_key_) {
+        snapshot.name = entry.name;
+        if (snapshot.files.empty()) {
+          snapshot.files = entry.files;
+          snapshot.video_files.clear();
+          for (const auto& file : entry.files)
+            if (file.likely_video)
+              snapshot.video_files.push_back(file);
+        }
+        break;
+      }
+  if (!library_status_.empty()) {
+    snapshot.status = library_status_;
+    snapshot.error = library_status_;
+  }
+  return snapshot;
+}
+
+VideoProgress Application::file_progress(int index) const {
+  if (library_)
+    for (const auto& entry : library_->entries)
+      if (entry.key == active_key_) {
+        auto p = entry.progress.find(index);
+        if (p != entry.progress.end())
+          return p->second;
+      }
+  return {};
+}
+
+void Application::play_torrent_file(int index) {
+  save_progress();
+  resume_pending_ = false;
+  if (!player_ || !player_->available()) {
+    library_status_ = "Playback requires libmpv";
+    return;
+  }
+  const auto snapshot = browsing_snapshot();
+  const auto* file = find_torrent_file(snapshot, index);
+  if (!file || !file->likely_video) {
+    library_status_ = "Select a video file to play";
+    return;
+  }
+  const auto uri = torrent_service_.stream_uri_for_file(index);
+  if (uri.empty()) {
+    library_status_ = "Torrent is still connecting. Try again shortly.";
+    return;
+  }
+  try {
+    player_->load_file(uri, true, file_progress(index).position);
+    playing_file_ = index;
+    progress_saved_ = Clock::now();
+    library_status_.clear();
+    navigate<ui::PlayerOverlay>();
+    update_window_title();
+  } catch (const std::exception& e) {
+    library_status_ = e.what();
+  }
+}
+
+void Application::rename_library(const std::string& key, const std::string& name) {
+  if (trim(name).empty())
+    return;
+  for (auto& entry : library_->entries)
+    if (entry.key == key)
+      entry.name = trim(name);
+  library_->save();
+}
+
+void Application::delete_library(const std::string& key) {
+  if (key == active_key_) {
+    active_key_.clear();
+    playing_file_ = -1;
+    resume_pending_ = false;
+    if (player_ && player_->has_file())
+      player_->stop();
+    torrent_service_.reset();
+    metadata_saved_ = true;
+  }
+  std::erase_if(library_->entries, [&](const auto& entry) { return entry.key == key; });
+  library_->save();
 }
 
 void Application::toggle_fullscreen() {
@@ -561,15 +790,17 @@ void Application::draw() {
     player_->process_events();
   }
   torrent_service_.process_alerts();
+  update_library();
 
   Clay_SetCurrentContext(clay_context_);
   Clay_SetLayoutDimensions({.width = static_cast<float>(metrics_.logical_width),
                             .height = static_cast<float>(metrics_.logical_height)});
   Clay_SetPointerState({.x = pointer_.x, .y = pointer_.y},
                        (pointer_.buttons & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0);
-  Clay_UpdateScrollContainers(
-      true, {.x = pointer_.wheel_x * 24.0F, .y = -pointer_.wheel_y * 24.0F},
-      current_delta_time_);
+  // SDL reports wheel-up as positive y; Clay's scroll position is <= 0 and a positive delta scrolls
+  // toward the top, so the y sign passes through unchanged. Clay scales the delta by 10 (~60px).
+  Clay_UpdateScrollContainers(true, {.x = -pointer_.wheel_x * 6.0F, .y = pointer_.wheel_y * 6.0F},
+                              current_delta_time_);
   pointer_.wheel_x = 0.0F;
   pointer_.wheel_y = 0.0F;
 
@@ -589,12 +820,10 @@ void Application::draw() {
 void Application::log_startup() const {
   TORRVIEW_LOG_INFO("Torrview " << TORRVIEW_VERSION);
   TORRVIEW_LOG_INFO("Dependencies: SDL3=yes OpenGL=yes Clay=yes"
-                    << " libmpv=" << available(has_mpv)
-                    << " libtorrent=" << available(has_libtorrent)
-                    << " freetype=" << available(has_freetype)
+                    << " libmpv=" << available(has_mpv) << " libtorrent="
+                    << available(has_libtorrent) << " freetype=" << available(has_freetype)
                     << " fontconfig=" << available(has_fontconfig)
-                    << " thorvg=" << available(has_thorvg)
-                    << " tracy=" << available(has_tracy));
+                    << " thorvg=" << available(has_thorvg) << " tracy=" << available(has_tracy));
   TORRVIEW_LOG_INFO("Input shell: drop .torrent files, local video files, or magnet text; press "
                     "Ctrl+O to open a source file, Ctrl+V to paste a magnet link");
   TORRVIEW_LOG_INFO("Playback controls: Space play/pause, Left/Right seek, PageUp/PageDown long "

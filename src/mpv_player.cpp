@@ -263,7 +263,7 @@ void MpvPlayer::initialize() {
 #endif
 }
 
-void MpvPlayer::load_file(const std::string& path, bool autoplay) {
+void MpvPlayer::load_file(const std::string& path, bool autoplay, double start_seconds) {
 #if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr) {
     initialize();
@@ -273,10 +273,17 @@ void MpvPlayer::load_file(const std::string& path, bool autoplay) {
     TORRVIEW_LOG_INFO("mpv loadfile " << path);
   }
 
-  int pause = autoplay ? 0 : 1;
+  pending_start_ = std::max(0.0, start_seconds);
+  pending_autoplay_ = autoplay;
+  snapshot_.seeking = pending_start_ > 0;
+  int pause = pending_start_ > 0 ? 1 : (autoplay ? 0 : 1);
+  snapshot_.file_ready = false;
+  snapshot_.position_valid = false;
+  snapshot_.time_pos = 0;
+  snapshot_.duration = 0;
   check_mpv(mpv_set_property(handle_, "pause", MPV_FORMAT_FLAG, &pause), "mpv initial pause");
   const char* args[] = {"loadfile", path.c_str(), "replace", nullptr};
-  command(args);
+  check_mpv(mpv_command(handle_, args), "mpv loadfile");
   snapshot_.loaded = true;
   snapshot_.paused = !autoplay;
   snapshot_.eof_reached = false;
@@ -289,6 +296,7 @@ void MpvPlayer::load_file(const std::string& path, bool autoplay) {
 #else
   (void)path;
   (void)autoplay;
+  (void)start_seconds;
   throw std::runtime_error("Cannot play local media: this build was configured without libmpv");
 #endif
 }
@@ -313,15 +321,32 @@ void MpvPlayer::process_events() {
       }
       break;
     }
+    case MPV_EVENT_SEEK:
+      snapshot_.seeking = true;
+      break;
+    case MPV_EVENT_PLAYBACK_RESTART:
+      snapshot_.seeking = false;
+      break;
     case MPV_EVENT_FILE_LOADED:
       if (snapshot_.path.starts_with("torrview://")) {
         TORRVIEW_LOG_INFO("mpv event file-loaded");
       }
       snapshot_.loaded = true;
       snapshot_.eof_reached = false;
+      snapshot_.file_ready = true;
+      snapshot_.position_valid = false;
       snapshot_.status = "Playing";
+      if (pending_start_ > 0) {
+        seek_absolute(pending_start_);
+        pending_start_ = 0;
+        set_pause(!pending_autoplay_);
+      }
       break;
     case MPV_EVENT_END_FILE: {
+      const auto* ended = static_cast<mpv_event_end_file*>(event->data);
+      if (ended && (ended->reason == MPV_END_FILE_REASON_STOP ||
+                    ended->reason == MPV_END_FILE_REASON_REDIRECT))
+        break;
       if (snapshot_.path.starts_with("torrview://")) {
         auto* end_file = static_cast<mpv_event_end_file*>(event->data);
         std::ostringstream out;
@@ -333,7 +358,7 @@ void MpvPlayer::process_events() {
         }
         TORRVIEW_LOG_WARNING(out.str());
       }
-      snapshot_.eof_reached = true;
+      snapshot_.eof_reached = ended && ended->reason == MPV_END_FILE_REASON_EOF;
       snapshot_.paused = true;
       const auto* end = static_cast<mpv_event_end_file*>(event->data);
       if (end != nullptr && end->error < 0) {
@@ -353,6 +378,7 @@ void MpvPlayer::process_events() {
     }
     case MPV_EVENT_SHUTDOWN:
       snapshot_.loaded = false;
+      snapshot_.seeking = false;
       snapshot_.status = "Stopped";
       break;
     default:
@@ -534,12 +560,15 @@ void MpvPlayer::stop() {
   snapshot_.loaded = false;
   snapshot_.paused = true;
   snapshot_.eof_reached = false;
+  snapshot_.file_ready = false;
+  snapshot_.position_valid = false;
   snapshot_.time_pos = 0.0;
   snapshot_.duration = 0.0;
   snapshot_.buffered_ranges.clear();
   snapshot_.path.clear();
   snapshot_.media_title.clear();
   snapshot_.diagnostics = {};
+  snapshot_.seeking = false;
   snapshot_.status = "Stopped";
   snapshot_.error.clear();
 }
@@ -605,6 +634,7 @@ void MpvPlayer::handle_property(const char* name, void* data, int format) {
   }
   if (property == "time-pos" && format == MPV_FORMAT_DOUBLE) {
     snapshot_.time_pos = *static_cast<double*>(data);
+    snapshot_.position_valid = true;
   } else if (property == "duration" && format == MPV_FORMAT_DOUBLE) {
     snapshot_.duration = *static_cast<double*>(data);
   } else if (property == "pause" && format == MPV_FORMAT_FLAG) {

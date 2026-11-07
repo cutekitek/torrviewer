@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace torrview {
 class Application;
@@ -44,6 +45,32 @@ private:
   [[nodiscard]] uint16_t scaled_font_size(uint16_t font_size) const;
   [[nodiscard]] float line_height(uint16_t font_size) const;
 
+  void button(Clay_ElementId id, std::string_view label, bool grow = false,
+              bool destructive = false);
+  void icon_button(Clay_ElementId id, const char* asset, std::string_view hint);
+  void input_field(Clay_ElementId id, const std::string& value, std::string_view placeholder,
+                   bool focused);
+  void focus_input(Clay_ElementId id, const std::string& value, float pointer_x);
+  void replace_selection(std::string& value, std::string_view inserted);
+  bool edit_input(std::string& value, const SDL_Event& event);
+  void submit_magnet();
+  void confirm_modal();
+  std::string magnet_;
+  bool input_focused_ = false;
+  std::size_t cursor_ = 0;
+  std::size_t anchor_ = 0;
+  float input_scroll_ = 0;
+  uint64_t caret_epoch_ = 0;
+  std::string input_error_;
+  std::string menu_key_;
+  std::string modal_key_;
+  std::string rename_;
+  bool deleting_ = false;
+  struct Row {
+    std::string key;
+    Clay_ElementId name, play, menu;
+  };
+  std::vector<Row> rows_;
   Application& app_;
   Settings& settings_;
   const bool& drag_active_;

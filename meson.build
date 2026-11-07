@@ -87,6 +87,8 @@ if not fs.exists(meson.project_source_root() / 'third_party' / 'clay' / 'clay.h'
   error('Clay submodule is missing. Run: git submodule update --init --recursive')
 endif
 
+sqlite_dep = dependency('sqlite3', static: static_linkage, required: true)
+
 sdl3_dep = dependency('sdl3', static: static_linkage, required: true)
 
 if host_platform == 'windows'
@@ -474,6 +476,8 @@ resource_files = files(
   'assets/icons/fullscreen.svg',
   'assets/icons/pause.svg',
   'assets/icons/play.svg',
+  'assets/icons/open-file.svg',
+  'assets/icons/more.svg',
   'assets/icons/rewind.svg',
   'assets/icons/volume.svg',
   'assets/icons/window.svg',
@@ -481,6 +485,7 @@ resource_files = files(
 resource_packer = files('scripts/pack_resources.py')
 
 torrview_deps = [
+  sqlite_dep,
   sdl3_dep,
   opengl_dep,
   clay_dep,

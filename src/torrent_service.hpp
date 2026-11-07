@@ -47,6 +47,8 @@ struct TorrentSnapshot {
   int seeds = 0;
   int download_rate = 0;
   int upload_rate = 0;
+  std::string identity;
+  std::shared_ptr<const std::vector<char>> metadata;
   std::string source;
   std::string name;
   std::string status;
@@ -82,6 +84,7 @@ public:
 
   bool available() const;
   void load_torrent_file(const std::string& path);
+  void load_torrent_data(const std::vector<char>& data, const std::string& source);
   void load_magnet(const std::string& magnet);
   void process_alerts();
   void reset();

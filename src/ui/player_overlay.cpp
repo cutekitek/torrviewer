@@ -1189,6 +1189,7 @@ void PlayerOverlay::dispatch_action(PlayerOverlayAction action) {
     app_.toggle_fullscreen();
     break;
   case PlayerOverlayAction::stop:
+    app_.save_progress();
     player_->stop();
     app_.update_window_title();
     if (torrent_service_.snapshot().state != TorrentLoadState::idle) {
@@ -1256,6 +1257,7 @@ void PlayerOverlay::return_to_file_browser_after_eof() {
   }
 
   TORRVIEW_LOG_INFO("Torrent playback ended; returning to file browser");
+  app_.save_progress();
   player_->stop();
   controls_visible_ = true;
   close_menus();

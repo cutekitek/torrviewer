@@ -1,8 +1,9 @@
 #pragma once
 
-#include "gl_api.hpp"
 #include "app_settings.hpp"
+#include "gl_api.hpp"
 #include "input_source.hpp"
+#include "library.hpp"
 #include "mpv_player.hpp"
 #include "sdl_event_manager.hpp"
 #include "settings.hpp"
@@ -44,6 +45,19 @@ public:
   }
 
   void show_source_dialog();
+  void open_text(const std::string& value) { accept_input(parse_text_input(value)); }
+  float text_width(std::string_view value, uint16_t font_size);
+  void cancel_resume() { resume_pending_ = false; }
+  Library& library() { return *library_; }
+  void open_library(const std::string& key, bool resume);
+  void play_torrent_file(int index);
+  void save_progress();
+  TorrentSnapshot browsing_snapshot() const;
+  VideoProgress file_progress(int index) const;
+  void rename_library(const std::string& key, const std::string& name);
+  void delete_library(const std::string& key);
+  const std::string& library_status() const { return library_status_; }
+
   void apply_settings();
   void update_window_title();
   void request_quit();
@@ -80,6 +94,15 @@ private:
   void draw();
   void log_startup() const;
 
+  void update_library();
+  LibraryEntry* active_entry();
+  std::unique_ptr<Library> library_;
+  std::string active_key_;
+  std::string library_status_;
+  int playing_file_ = -1;
+  bool resume_pending_ = false;
+  bool metadata_saved_ = false;
+  Clock::time_point progress_saved_{};
   bool running_ = false;
   bool sdl_initialized_ = false;
   bool drag_active_ = false;

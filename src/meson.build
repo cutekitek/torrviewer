@@ -18,6 +18,7 @@ packed_resources = custom_target(
 
 torrview_sources = files(
   'app.cpp',
+  'library.cpp',
   'app_settings.cpp',
   'clay.cpp',
   'main.cpp',

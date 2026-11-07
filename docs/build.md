@@ -42,6 +42,13 @@ meson setup build-dev \
 meson compile -C build-dev dev
 ```
 
+On Windows, use the MSYS2 **CLANG64** shell for production and keep all tools
+and system dependencies in `/clang64`. Set `CC=clang`, `CXX=clang++`,
+`AR=llvm-ar`, and `RANLIB=llvm-ranlib` before setup; see the
+[CLANG64 production guide](windows-static-build.md). When switching an existing
+build directory from GCC, use `meson setup --wipe build-prod -Dbuild_target=prod`
+from that environment so cached dependency objects are rebuilt.
+
 Configure and compile the production target:
 
 ```sh
@@ -76,3 +83,23 @@ documented in [Windows development build](windows-dev-build.md) and
 For the Jetpack Compose Android/TV application and shared native engine, see
 [Android builds](android.md). Desktop builds continue to use the `dev`/`prod`
 and `run-dev`/`run-prod` Meson targets.
+
+## SQLite library
+
+Desktop builds require SQLite 3 development headers and libraries (`sqlite3` in
+pkg-config). On MSYS2 UCRT64 install `mingw-w64-ucrt-x86_64-sqlite3`; production
+uses its static archive (the CLANG64 production package is
+`mingw-w64-clang-x86_64-sqlite3`). Linux distributions typically package the headers as
+`libsqlite3-dev` or `sqlite-devel`.
+
+The desktop library lives in `torrview.sqlite` beside the executable, alongside
+`torrview.ini`. Keep that directory writable. The database includes torrent
+metadata, source links, display names, the last watched file, and per-file
+positions in seconds. Torrent payloads remain memory-backed. SQLite writes run
+in a background worker, with progress saved every second and flushed on normal
+shutdown. An abrupt process termination can lose the latest checkpoint.
+
+Click a library name to browse all files; click Play/Resume to watch the last
+selected episode at its saved position. Each video in the file list resumes its
+own position. The `...` menu opens Rename and Delete actions with confirmation
+modals. Delete removes library metadata and progress only.
