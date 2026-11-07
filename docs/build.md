@@ -103,3 +103,30 @@ Click a library name to browse all files; click Play/Resume to watch the last
 selected episode at its saved position. Each video in the file list resumes its
 own position. The `...` menu opens Rename and Delete actions with confirmation
 modals. Delete removes library metadata and progress only.
+
+## Capturing UI screenshots
+
+Any desktop build has a scripted capture mode for reviewing the interface without
+touching the mouse or keyboard. When `TORRVIEW_UI_CAPTURE` names a directory, the
+window stays hidden, the app walks through the library, file list, settings,
+dialogs, and player states using its real input handlers, writes one BMP per
+state into that directory, and quits.
+
+```sh
+TORRVIEW_UI_CAPTURE=/tmp/torrview-shots \
+TORRVIEW_UI_CAPTURE_TORRENT=/path/to/test.torrent \
+TORRVIEW_UI_CAPTURE_VIDEO=/path/to/short-video.mkv \
+  build-dev/src/dev.exe
+```
+
+Both media variables are optional; the steps that need them are skipped when they
+are unset. The run uses the normal `torrview.ini` and `torrview.sqlite` beside the
+executable, so delete `torrview.sqlite` first to capture the empty library. The
+script lives in `Application::dev_capture_setup()` and finds controls by their
+Clay element IDs. A short video with two audio tracks can be generated with:
+
+```sh
+ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=440 \
+  -f lavfi -i sine=frequency=660 -t 60 -map 0:v -map 1:a -map 2:a \
+  -c:v libx264 -c:a aac short-video.mkv
+```

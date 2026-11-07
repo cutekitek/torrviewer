@@ -5,30 +5,75 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 namespace torrview::ui {
 namespace {
 
-constexpr Clay_Color color_background = {12.0F, 13.0F, 15.0F, 255.0F};
-constexpr Clay_Color color_text = {233.0F, 236.0F, 241.0F, 255.0F};
-constexpr Clay_Color color_accent = {74.0F, 181.0F, 162.0F, 255.0F};
-constexpr Clay_Color color_error = {214.0F, 94.0F, 82.0F, 255.0F};
-constexpr Clay_Padding text_padding = {4, 4, 4, 4};
+constexpr float input_padding = 16.0F;
+constexpr float source_row_height = 48.0F;
 
-Clay_String clay_string(std::string_view value) {
-  const std::size_t max_length = static_cast<std::size_t>(std::numeric_limits<int32_t>::max());
-  const std::size_t length = std::min(value.size(), max_length);
-  return {.isStaticallyAllocated = false,
-          .length = static_cast<int32_t>(length),
-          .chars = value.data()};
+std::size_t previous_character(std::string_view value, std::size_t at) {
+  if (at == 0)
+    return 0;
+  --at;
+  while (at > 0 && (static_cast<unsigned char>(value[at]) & 0xc0) == 0x80)
+    --at;
+  return at;
+}
+
+std::size_t next_character(std::string_view value, std::size_t at) {
+  if (at >= value.size())
+    return value.size();
+  ++at;
+  while (at < value.size() && (static_cast<unsigned char>(value[at]) & 0xc0) == 0x80)
+    ++at;
+  return at;
+}
+
+std::string_view file_name(std::string_view path) {
+  const std::size_t slash = path.find_last_of("/\\");
+  return slash == std::string_view::npos ? path : path.substr(slash + 1);
+}
+
+std::string entry_summary(const LibraryEntry& entry) {
+  if (entry.files.empty()) {
+    return "File list not downloaded yet";
+  }
+  std::size_t videos = 0;
+  for (const TorrentFileInfo& file : entry.files) {
+    videos += file.likely_video ? 1U : 0U;
+  }
+  return std::to_string(videos) + (videos == 1 ? " video" : " videos");
+}
+
+std::string entry_position(const LibraryEntry& entry) {
+  if (entry.last_file < 0) {
+    return {};
+  }
+  const auto progress = entry.progress.find(entry.last_file);
+  if (progress == entry.progress.end() || progress->second.position <= 0.0) {
+    return {};
+  }
+  std::string_view name;
+  for (const TorrentFileInfo& file : entry.files) {
+    if (file.index == entry.last_file) {
+      name = file_name(file.path);
+    }
+  }
+  std::string result = "Stopped at " + format_clock(progress->second.position);
+  if (!name.empty()) {
+    result += " in ";
+    result += truncate_middle(name, 48);
+  }
+  return result;
 }
 
 } // namespace
 
 TitlePage::TitlePage(Application& app, Settings& settings, const bool& drag_active,
                      const std::optional<ParsedInput>& last_input)
-    : app_(app), settings_(settings), drag_active_(drag_active), last_input_(last_input) {
+    : app_(app), settings_(settings), ui_(settings), drag_active_(drag_active),
+      last_input_(last_input) {
   initialize_ids();
 }
 
@@ -41,7 +86,7 @@ void TitlePage::open() {
 
 void TitlePage::draw(RenderContext& render_context) {
   begin_frame();
-  build(render_context.metrics, drag_active_, last_input_);
+  build(render_context.metrics, drag_active_);
 }
 
 void TitlePage::confirm_modal() {
@@ -54,25 +99,6 @@ void TitlePage::confirm_modal() {
   }
   modal_key_.clear();
 }
-
-namespace {
-std::size_t previous_character(std::string_view value, std::size_t at) {
-  if (at == 0)
-    return 0;
-  --at;
-  while (at > 0 && (static_cast<unsigned char>(value[at]) & 0xc0) == 0x80)
-    --at;
-  return at;
-}
-std::size_t next_character(std::string_view value, std::size_t at) {
-  if (at >= value.size())
-    return value.size();
-  ++at;
-  while (at < value.size() && (static_cast<unsigned char>(value[at]) & 0xc0) == 0x80)
-    ++at;
-  return at;
-}
-} // namespace
 
 void TitlePage::replace_selection(std::string& value, std::string_view inserted) {
   const auto first = std::min(cursor_, anchor_);
@@ -146,8 +172,9 @@ bool TitlePage::edit_input(std::string& value, const SDL_Event& event) {
 }
 
 void TitlePage::focus_input(Clay_ElementId id, const std::string& value, float pointer_x) {
-  const float local =
-      std::max(0.0F, pointer_x - Clay_GetElementData(id).boundingBox.x - 14 + input_scroll_);
+  const uint16_t font_size = ui_.size(theme::size_lead);
+  const float local = std::max(0.0F, pointer_x - Clay_GetElementData(id).boundingBox.x -
+                                         input_padding + input_scroll_);
   std::vector<std::size_t> boundaries{0};
   for (std::size_t at = 0; at < value.size();) {
     at = next_character(value, at);
@@ -155,15 +182,14 @@ void TitlePage::focus_input(Clay_ElementId id, const std::string& value, float p
   }
   auto found = std::lower_bound(
       boundaries.begin(), boundaries.end(), local, [&](std::size_t offset, float x) {
-        return app_.text_width(std::string_view(value).substr(0, offset), scaled_font_size(15)) < x;
+        return app_.text_width(std::string_view(value).substr(0, offset), font_size) < x;
       });
   cursor_ = found == boundaries.end() ? value.size() : *found;
   if (found != boundaries.begin() && found != boundaries.end()) {
     const auto before = *(found - 1);
-    const float midpoint =
-        (app_.text_width(std::string_view(value).substr(0, before), scaled_font_size(15)) +
-         app_.text_width(std::string_view(value).substr(0, *found), scaled_font_size(15))) /
-        2;
+    const float midpoint = (app_.text_width(std::string_view(value).substr(0, before), font_size) +
+                            app_.text_width(std::string_view(value).substr(0, *found), font_size)) /
+                           2;
     if (local < midpoint)
       cursor_ = before;
   }
@@ -173,7 +199,7 @@ void TitlePage::focus_input(Clay_ElementId id, const std::string& value, float p
 
 void TitlePage::submit_magnet() {
   if (!is_magnet_link(magnet_)) {
-    input_error_ = "Enter a magnet URL beginning with magnet:?";
+    input_error_ = "That is not a magnet link. Magnet links start with magnet:?";
     input_focused_ = true;
     return;
   }
@@ -193,8 +219,11 @@ bool TitlePage::handle_event(const SDL_Event& event) {
   }
   std::string* input =
       modal ? (deleting_ ? nullptr : &rename_) : (input_focused_ ? &magnet_ : nullptr);
-  if (input && edit_input(*input, event))
+  if (input && edit_input(*input, event)) {
+    if (input == &magnet_ && event.type == SDL_EVENT_TEXT_INPUT)
+      input_error_.clear();
     return true;
+  }
   if (event.type == SDL_EVENT_KEY_DOWN && (modal || input)) {
     if (event.key.key == SDLK_ESCAPE) {
       modal_key_.clear();
@@ -270,94 +299,13 @@ Clay_ElementId TitlePage::source_panel_id() const { return source_panel_id_; }
 
 Clay_ElementId TitlePage::settings_button_id() const { return settings_id_; }
 
-void TitlePage::set_font_size(int font_size) { font_size_ = std::clamp(font_size, 9, 24); }
-
-void TitlePage::begin_frame() { frame_strings_.clear(); }
-
-std::string TitlePage::status_text(const std::optional<ParsedInput>& last_input) const {
-  if (!last_input.has_value()) {
-    return "Paste a magnet URL and press Enter, or open a torrent file";
-  }
-
-  std::string label = input_kind_label(last_input->kind);
-  label += ": ";
-  label += compact_value(last_input->value, 44);
-  return label;
-}
-
-std::string_view TitlePage::retain_frame_text(std::string value) {
-  frame_strings_.push_back(std::move(value));
-  return frame_strings_.back();
-}
-
-void TitlePage::text(std::string_view value, uint16_t font_size, Clay_Color color,
-                     Clay_TextElementConfigWrapMode wrap) {
-  const uint16_t scaled_size = scaled_font_size(font_size);
-  CLAY_AUTO_ID(
-      {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F), .height = CLAY_SIZING_FIT(0.0F)},
-                  .padding = text_padding,
-                  .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
-    CLAY_TEXT(clay_string(value), CLAY_TEXT_CONFIG({.textColor = color,
-                                                    .fontSize = scaled_size,
-                                                    .lineHeight = static_cast<uint16_t>(std::lround(
-                                                        static_cast<float>(scaled_size) * 1.25F)),
-                                                    .wrapMode = wrap}));
-  }
-}
-
-uint16_t TitlePage::scaled_font_size(uint16_t font_size) const {
-  const float scale = static_cast<float>(std::clamp(settings_.values().font_size, 9, 24)) / 13.0F;
-  return static_cast<uint16_t>(
-      std::clamp<int>(static_cast<int>(std::lround(font_size * scale)), 8, 32));
-}
-
-float TitlePage::line_height(uint16_t font_size) const {
-  return static_cast<float>(scaled_font_size(font_size)) * 1.25F;
-}
-
-void TitlePage::button(Clay_ElementId id, std::string_view label, bool grow, bool destructive) {
-  CLAY(id, {.layout = {.sizing = {.width = grow ? CLAY_SIZING_GROW(0) : CLAY_SIZING_FIT(0),
-                                  .height = CLAY_SIZING_FIXED(48)},
-                       .padding = {12, 12, 4, 4},
-                       .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-            .backgroundColor =
-                Clay_PointerOver(id) ? Clay_Color{38, 43, 48, 255} : Clay_Color{22, 24, 28, 255},
-            .cornerRadius = CLAY_CORNER_RADIUS(10),
-            .clip = {.horizontal = true},
-            .border = {.color = {100, 105, 112, 255}, .width = {1, 1, 1, 1, 0}}}) {
-    text(label, 15, destructive ? color_error : color_text);
-  }
-}
-
-void TitlePage::icon_button(Clay_ElementId id, const char* asset, std::string_view hint) {
-  CLAY(id, {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(48), .height = CLAY_SIZING_FIXED(48)},
-                       .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-            .backgroundColor =
-                Clay_PointerOver(id) ? Clay_Color{38, 43, 48, 255} : Clay_Color{22, 24, 28, 255},
-            .cornerRadius = CLAY_CORNER_RADIUS(10)}) {
-    CLAY_AUTO_ID(
-        {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(26), .height = CLAY_SIZING_FIXED(26)}},
-         .image = {.imageData = const_cast<char*>(asset)}}) {}
-    if (Clay_PointerOver(id) && modal_key_.empty() && menu_key_.empty()) {
-      CLAY_AUTO_ID({.layout = {.padding = {8, 8, 4, 4}},
-                    .backgroundColor = {42, 47, 54, 255},
-                    .cornerRadius = CLAY_CORNER_RADIUS(5),
-                    .floating = {.offset = {0, 6},
-                                 .zIndex = 30,
-                                 .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP,
-                                                  .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM},
-                                 .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
-                                 .attachTo = CLAY_ATTACH_TO_PARENT}}) {
-        text(hint, 11, color_text);
-      }
-    }
-  }
-}
+void TitlePage::begin_frame() { ui_.begin_frame(); }
 
 void TitlePage::input_field(Clay_ElementId id, const std::string& value,
                             std::string_view placeholder, bool focused) {
-  const auto font_size = scaled_font_size(15);
-  const float width = std::max(80.0F, Clay_GetElementData(id).boundingBox.width - 28);
+  const auto font_size = ui_.size(theme::size_lead);
+  const float width =
+      std::max(80.0F, Clay_GetElementData(id).boundingBox.width - input_padding * 2.0F);
   if (focused) {
     cursor_ = std::min(cursor_, value.size());
     anchor_ = std::min(anchor_, value.size());
@@ -369,39 +317,43 @@ void TitlePage::input_field(Clay_ElementId id, const std::string& value,
   const auto first = focused ? std::min(cursor_, anchor_) : value.size();
   const auto last = focused ? std::max(cursor_, anchor_) : value.size();
   const bool caret_visible = focused && (SDL_GetTicks() - caret_epoch_) % 1000 < 600;
+  const auto line_height = static_cast<uint16_t>(ui_.line(theme::size_lead));
   auto segment = [&](std::string_view part, bool selected) {
     if (part.empty())
       return;
-    const auto retained = retain_frame_text(std::string(part));
-    CLAY_AUTO_ID(
-        {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0), .height = CLAY_SIZING_FIT(0)}},
-         .backgroundColor = selected ? Clay_Color{44, 103, 100, 255} : Clay_Color{0, 0, 0, 0}}) {
-      CLAY_TEXT(clay_string(retained), CLAY_TEXT_CONFIG({.textColor = color_text,
+    const auto retained = ui_.keep(std::string(part));
+    CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIT(0), .height = CLAY_SIZING_FIT(0)}},
+                  .backgroundColor = selected ? Clay_Color{92, 86, 76, 255} : theme::clear}) {
+      CLAY_TEXT(clay_string(retained), CLAY_TEXT_CONFIG({.textColor = theme::lamp,
                                                          .fontSize = font_size,
+                                                         .lineHeight = line_height,
                                                          .wrapMode = CLAY_TEXT_WRAP_NONE}));
     }
   };
   auto caret = [&] {
     CLAY_AUTO_ID(
         {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(1.5F),
-                               .height = CLAY_SIZING_FIXED(static_cast<float>(font_size) * 1.3F)}},
-         .backgroundColor = caret_visible ? color_accent : Clay_Color{0, 0, 0, 0}}) {}
+                               .height = CLAY_SIZING_FIXED(static_cast<float>(line_height))}},
+         .backgroundColor = caret_visible ? theme::lamp : theme::clear}) {}
   };
-  CLAY(id, {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(48)},
-                       .padding = {14, 14, 0, 0},
+  const bool hovered = Clay_PointerOver(id);
+  CLAY(id, {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0),
+                                  .height = CLAY_SIZING_FIXED(source_row_height)},
+                       .padding = {static_cast<uint16_t>(input_padding),
+                                   static_cast<uint16_t>(input_padding), 0, 0},
                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}},
-            .backgroundColor = {16, 18, 21, 255},
-            .cornerRadius = CLAY_CORNER_RADIUS(10),
+            .backgroundColor = focused || hovered ? theme::lifted : theme::raised,
+            .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_control),
             .clip = {.horizontal = true, .childOffset = {focused ? -input_scroll_ : 0, 0}},
-            .border = {.color = focused ? color_accent : Clay_Color{120, 125, 133, 255},
-                       .width = {1, 1, 1, 1, 0}}}) {
+            .border = {.color = focused ? theme::lamp : theme::clear, .width = {1, 1, 1, 1, 0}}}) {
     CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIT(0)},
                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
       if (value.empty()) {
         if (focused)
           caret();
-        CLAY_TEXT(clay_string(placeholder), CLAY_TEXT_CONFIG({.textColor = {137, 144, 155, 255},
+        CLAY_TEXT(clay_string(placeholder), CLAY_TEXT_CONFIG({.textColor = theme::smoke,
                                                               .fontSize = font_size,
+                                                              .lineHeight = line_height,
                                                               .wrapMode = CLAY_TEXT_WRAP_NONE}));
       } else {
         segment(std::string_view(value).substr(0, first), false);
@@ -416,112 +368,219 @@ void TitlePage::input_field(Clay_ElementId id, const std::string& value,
   }
 }
 
-void TitlePage::build(const WindowMetrics& metrics, bool drag_active,
-                      const std::optional<ParsedInput>& last_input) {
+void TitlePage::library_row(const LibraryEntry& entry, uint32_t index, float column_width) {
+  const Row row{entry.key, CLAY_IDI("LibraryName", index), CLAY_IDI("LibraryPlay", index),
+                CLAY_IDI("LibraryMenu", index)};
+  rows_.push_back(row);
+  const bool menu_open = menu_key_ == entry.key;
+  const bool hovered = Clay_PointerOver(CLAY_IDI("LibraryRow", index)) && modal_key_.empty();
+  const std::string position = entry_position(entry);
+  const std::size_t name_chars = ui_.chars_for_width(column_width - 200.0F, theme::size_lead);
+
+  CLAY(CLAY_IDI("LibraryRow", index),
+       {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIT(0)},
+                   .padding = {0, 8, 0, 0},
+                   .childGap = 8,
+                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}},
+        .backgroundColor = hovered || menu_open ? theme::raised : theme::clear,
+        .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_control)}) {
+    CLAY(row.name,
+         {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIT(0)},
+                     .padding = {14, 8, 14, 14},
+                     .childGap = 4,
+                     .layoutDirection = CLAY_TOP_TO_BOTTOM}}) {
+      ui_.text(ui_.keep(truncate_middle(entry.name, name_chars)), theme::size_lead, theme::lamp,
+               theme::font_semibold);
+      ui_.text(ui_.keep(position.empty() ? entry_summary(entry)
+                                         : entry_summary(entry) + ". " + position),
+               theme::size_caption, theme::ash);
+    }
+    ui_.button(row.play, entry.last_file >= 0 ? "Resume" : "Play", ButtonKind::secondary);
+    ui_.icon_button(row.menu, "icons/more.svg", menu_open, 34.0F, 18.0F);
+  }
+  if (menu_open) {
+    row_menu(row);
+  }
+}
+
+void TitlePage::row_menu(const Row& row) {
+  CLAY(CLAY_ID("LibraryActions"),
+       {.layout = {.sizing = {.width = CLAY_SIZING_FIT(200)},
+                   .padding = {4, 4, 4, 4},
+                   .childGap = 2,
+                   .layoutDirection = CLAY_TOP_TO_BOTTOM},
+        .backgroundColor = theme::lifted,
+        .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_menu),
+        .floating = {.offset = {0, 6},
+                     .parentId = row.menu.id,
+                     .zIndex = 40,
+                     .attachPoints = {.element = CLAY_ATTACH_POINT_RIGHT_TOP,
+                                      .parent = CLAY_ATTACH_POINT_RIGHT_BOTTOM},
+                     .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_CAPTURE,
+                     .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+                     .clipTo = CLAY_CLIP_TO_NONE}}) {
+    const auto item = [this](Clay_ElementId id, std::string_view label, Clay_Color ink) {
+      CLAY(id, {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0),
+                                      .height = CLAY_SIZING_FIXED(ui_.line(theme::size_body) + 14)},
+                           .padding = {12, 16, 0, 0},
+                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}},
+                .backgroundColor = Clay_PointerOver(id) ? theme::rule : theme::clear,
+                .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_control)}) {
+        ui_.text(label, theme::size_body, ink);
+      }
+    };
+    item(CLAY_ID("LibraryRename"), "Rename", theme::lamp);
+    item(CLAY_ID("LibraryDelete"), "Remove from library", theme::fault);
+  }
+}
+
+void TitlePage::modal(float column_width) {
+  const std::string name = [&] {
+    for (const auto& entry : app_.library().entries)
+      if (entry.key == modal_key_)
+        return entry.name;
+    return std::string();
+  }();
+  CLAY(CLAY_ID("LibraryModal"),
+       {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0)},
+                   .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+        .backgroundColor = theme::veil,
+        .floating = {.zIndex = 100,
+                     .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_CAPTURE,
+                     .attachTo = CLAY_ATTACH_TO_ROOT}}) {
+    CLAY(CLAY_ID("LibraryDialog"),
+         {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(std::min(column_width, 460.0F))},
+                     .padding = {24, 24, 22, 20},
+                     .childGap = 12,
+                     .layoutDirection = CLAY_TOP_TO_BOTTOM},
+          .backgroundColor = theme::raised,
+          .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_menu),
+          .border = {.color = theme::rule, .width = {1, 1, 1, 1, 0}}}) {
+      ui_.text(deleting_ ? "Remove from library?" : "Rename", 18, theme::lamp,
+               theme::font_semibold);
+      if (deleting_) {
+        ui_.text(ui_.keep(truncate_middle(name, 60)), theme::size_body, theme::lamp,
+                 theme::font_regular, CLAY_TEXT_WRAP_WORDS);
+        ui_.text("Its saved playback positions are removed too. You can open the torrent again "
+                 "at any time.",
+                 theme::size_body, theme::ash, theme::font_regular, CLAY_TEXT_WRAP_WORDS);
+      } else {
+        input_field(CLAY_ID("RenameInput"), rename_, "Name", true);
+      }
+      ui_.gap(1.0F, 4.0F);
+      CLAY(CLAY_ID("LibraryDialogButtons"),
+           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = 8}}) {
+        ui_.spacer();
+        ui_.button(CLAY_ID("LibraryCancel"), "Cancel", ButtonKind::quiet);
+        ui_.button(CLAY_ID("LibraryConfirm"), deleting_ ? "Remove" : "Rename",
+                   deleting_ ? ButtonKind::danger : ButtonKind::primary);
+      }
+    }
+  }
+}
+
+void TitlePage::build(const WindowMetrics& metrics, bool drag_active) {
   rows_.clear();
-  const float width =
-      std::max(260.0F, std::min(960.0F, static_cast<float>(metrics.logical_width) - 64));
+  const float column_width =
+      std::clamp(static_cast<float>(metrics.logical_width) - 96.0F, 280.0F, 880.0F);
+  const auto& entries = app_.library().entries;
+  const bool magnet_focused = input_focused_ && modal_key_.empty();
+
   CLAY(CLAY_ID("TitleRoot"),
        {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0)},
-                   .padding = {24, 24, 56, 24},
+                   .padding = {0, 0, 24, 0},
                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER},
                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
-        .backgroundColor = color_background}) {
-    CLAY(CLAY_ID("LibraryContent"),
-         {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(width), .height = CLAY_SIZING_GROW(0)},
-                     .childGap = 14,
-                     .layoutDirection = CLAY_TOP_TO_BOTTOM}}) {
-      CLAY(CLAY_ID("SourceToolbar"),
-           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = 10}}) {
-        icon_button(source_panel_id_, "icons/open-file.svg", "Open file (Ctrl+O)");
-        input_field(CLAY_ID("MagnetInput"), magnet_, "magnet url...",
-                    input_focused_ && modal_key_.empty());
-        icon_button(settings_id_, "icons/gear.svg", "Settings");
+        .backgroundColor = theme::graphite}) {
+    CLAY(CLAY_ID("TitleHeader"), {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(column_width)},
+                                             .layoutDirection = CLAY_TOP_TO_BOTTOM}}) {
+      CLAY(CLAY_ID("TitleTopRow"), {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)},
+                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+        ui_.text("Torrview", theme::size_lead, theme::lamp, theme::font_semibold);
+        ui_.spacer();
+        ui_.icon_button(settings_id_, "icons/gear.svg");
       }
-      text(retain_frame_text(drag_active ? "Drop torrent here" : status_text(last_input)), 12,
-           color_accent);
-      if (!input_error_.empty())
-        text(input_error_, 12, color_error);
+      ui_.gap(1.0F, 56.0F);
+      ui_.text("Watch a torrent while it downloads", theme::size_title, theme::lamp,
+               theme::font_semibold);
+      ui_.gap(1.0F, 20.0F);
+      CLAY(CLAY_ID("SourceToolbar"),
+           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = 8}}) {
+        input_field(CLAY_ID("MagnetInput"), magnet_, "Paste a magnet link", magnet_focused);
+        CLAY(source_panel_id_,
+             {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0),
+                                    .height = CLAY_SIZING_FIXED(source_row_height)},
+                         .padding = {18, 18, 0, 0},
+                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+              .backgroundColor =
+                  Clay_PointerOver(source_panel_id_) ? Clay_Color{255, 251, 243, 255} : theme::lamp,
+              .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_control)}) {
+          ui_.text("Open file", theme::size_body, theme::graphite, theme::font_semibold);
+        }
+      }
+      ui_.gap(1.0F, 10.0F);
+      if (!input_error_.empty()) {
+        ui_.text(input_error_, theme::size_caption, theme::fault);
+      } else if (drag_active) {
+        ui_.text("Release to open", theme::size_caption, theme::lamp);
+      } else {
+        ui_.text(magnet_focused ? "Press Enter to open the link"
+                                : "Or drop a .torrent or video file onto this window",
+                 theme::size_caption, theme::smoke);
+      }
       const auto error = app_.library().error();
-      if (!error.empty())
-        text(retain_frame_text("Could not save library: " + error), 13, color_error,
-             CLAY_TEXT_WRAP_WORDS);
-      if (!app_.library_status().empty())
-        text(app_.library_status(), 13, color_error);
-      CLAY(CLAY_ID("LibraryList"),
-           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0)},
-                       .childGap = 10,
-                       .layoutDirection = CLAY_TOP_TO_BOTTOM},
-            .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}}) {
-        if (app_.library().entries.empty())
-          text("Your opened torrents will appear here", 15, color_text);
+      if (!error.empty()) {
+        ui_.gap(1.0F, 6.0F);
+        ui_.text(ui_.keep("The library could not be saved: " + error), theme::size_caption,
+                 theme::fault, theme::font_regular, CLAY_TEXT_WRAP_WORDS);
+      }
+      if (!app_.library_status().empty()) {
+        ui_.gap(1.0F, 6.0F);
+        ui_.text(app_.library_status(), theme::size_caption, theme::fault);
+      }
+      ui_.gap(1.0F, 48.0F);
+      CLAY(CLAY_ID("LibraryHeading"), {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)},
+                                                  .padding = {0, 0, 0, 10},
+                                                  .childGap = 10,
+                                                  .childAlignment = {.y = CLAY_ALIGN_Y_BOTTOM}}}) {
+        ui_.text("Library", theme::size_body, theme::ash, theme::font_semibold);
+        if (!entries.empty()) {
+          ui_.text(ui_.keep(std::to_string(entries.size())), theme::size_body, theme::smoke);
+        }
+      }
+      ui_.rule();
+    }
+
+    CLAY(CLAY_ID("LibraryList"),
+         {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0)},
+                     .padding = {0, 0, 6, 32},
+                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER},
+                     .layoutDirection = CLAY_TOP_TO_BOTTOM},
+          .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}}) {
+      CLAY(CLAY_ID("LibraryColumn"),
+           {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(column_width)},
+                       .childGap = 2,
+                       .layoutDirection = CLAY_TOP_TO_BOTTOM}}) {
+        if (entries.empty()) {
+          CLAY(CLAY_ID("LibraryEmpty"), {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)},
+                                                    .padding = {0, 0, 18, 0},
+                                                    .childGap = 4,
+                                                    .layoutDirection = CLAY_TOP_TO_BOTTOM}}) {
+            ui_.text("Nothing here yet", theme::size_body, theme::lamp);
+            ui_.text("Torrents you open are kept here with the place you stopped watching.",
+                     theme::size_body, theme::ash, theme::font_regular, CLAY_TEXT_WRAP_WORDS);
+          }
+        }
         uint32_t index = 0;
-        for (const auto& entry : app_.library().entries) {
-          Row row{entry.key, CLAY_IDI("LibraryName", index), CLAY_IDI("LibraryPlay", index),
-                  CLAY_IDI("LibraryMenu", index)};
-          rows_.push_back(row);
-          CLAY(CLAY_IDI("LibraryRow", index),
-               {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = 10}}) {
-            button(row.name, retain_frame_text(entry.name), true);
-            icon_button(row.play, "icons/play.svg",
-                        entry.last_file >= 0 ? "Resume last video" : "Play");
-            icon_button(row.menu, "icons/more.svg", "Torrent options");
-          }
-          if (menu_key_ == entry.key) {
-            CLAY(CLAY_ID("LibraryActions"),
-                 {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(160)},
-                             .padding = {8, 8, 8, 8},
-                             .childGap = 4,
-                             .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                  .backgroundColor = {22, 24, 28, 255},
-                  .cornerRadius = CLAY_CORNER_RADIUS(12),
-                  .floating = {.offset = {0, 6},
-                               .parentId = row.menu.id,
-                               .zIndex = 40,
-                               .attachPoints = {.element = CLAY_ATTACH_POINT_RIGHT_TOP,
-                                                .parent = CLAY_ATTACH_POINT_RIGHT_BOTTOM},
-                               .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_CAPTURE,
-                               .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
-                               .clipTo = CLAY_CLIP_TO_NONE},
-                  .border = {.color = {100, 105, 112, 255}, .width = {1, 1, 1, 1, 0}}}) {
-              button(CLAY_ID("LibraryDelete"), "Delete", true, true);
-              button(CLAY_ID("LibraryRename"), "Rename", true);
-            }
-          }
+        for (const auto& entry : entries) {
+          library_row(entry, index, column_width);
           ++index;
         }
       }
     }
+    ui_.scrollbar(CLAY_ID("LibraryList"));
     if (!modal_key_.empty()) {
-      CLAY(CLAY_ID("LibraryModal"),
-           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0)},
-                       .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-            .backgroundColor = {0, 0, 0, 210},
-            .floating = {.zIndex = 100,
-                         .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_CAPTURE,
-                         .attachTo = CLAY_ATTACH_TO_ROOT}}) {
-        CLAY(CLAY_ID("LibraryDialog"),
-             {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(std::min(width, 480.0F))},
-                         .padding = {24, 24, 24, 24},
-                         .childGap = 16,
-                         .layoutDirection = CLAY_TOP_TO_BOTTOM},
-              .backgroundColor = {25, 28, 33, 255},
-              .cornerRadius = CLAY_CORNER_RADIUS(14)}) {
-          text(deleting_ ? "Delete torrent?" : "Rename torrent", 19,
-               deleting_ ? color_error : color_text);
-          text(retain_frame_text(deleting_ ? "Remove " + rename_ +
-                                                 " and its saved progress from the library?"
-                                           : "Enter a new name, then confirm."),
-               14, color_text, CLAY_TEXT_WRAP_WORDS);
-          if (!deleting_)
-            input_field(CLAY_ID("RenameInput"), rename_, "New name...", true);
-          CLAY(CLAY_ID("LibraryDialogButtons"), {.layout = {.childGap = 12}}) {
-            button(CLAY_ID("LibraryCancel"), "Cancel");
-            button(CLAY_ID("LibraryConfirm"), deleting_ ? "Delete" : "Confirm rename", false,
-                   deleting_);
-          }
-        }
-      }
+      modal(column_width);
     }
   }
 }

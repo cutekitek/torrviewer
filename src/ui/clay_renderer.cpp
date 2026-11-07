@@ -25,6 +25,11 @@ uint8_t clay_alpha(Clay_Color color) { return clay_channel(color, &Clay_Color::a
 
 bool ok(tvg::Result result) { return result == tvg::Result::Success; }
 
+const char* font_for(const FontNames& names, uint16_t font_id) {
+  const char* name = font_id < names.size() ? names[font_id] : nullptr;
+  return name != nullptr ? name : names[0];
+}
+
 const char* next_utf8(const char* cursor, const char* end) {
   if (cursor >= end || *cursor == '\0') {
     return end;
@@ -48,8 +53,8 @@ const char* next_utf8(const char* cursor, const char* end) {
 Clay_Dimensions measure_text(Clay_StringSlice text, Clay_TextElementConfig* config,
                              void* user_data) {
   auto* state = static_cast<TextMeasureState*>(user_data);
-  if (state == nullptr || state->font_name == nullptr || config == nullptr || text.length <= 0 ||
-      text.chars == nullptr) {
+  if (state == nullptr || state->font_names[0] == nullptr || config == nullptr ||
+      text.length <= 0 || text.chars == nullptr) {
     return {0.0F, 0.0F};
   }
 
@@ -61,8 +66,8 @@ Clay_Dimensions measure_text(Clay_StringSlice text, Clay_TextElementConfig* conf
   const auto font_size = static_cast<float>(std::max<uint16_t>(config->fontSize, 1));
   const std::string value(text.chars, static_cast<std::size_t>(text.length));
 
-  if (measure == nullptr || !ok(measure->font(state->font_name)) || !ok(measure->size(font_size)) ||
-      !ok(measure->text(value.c_str()))) {
+  if (measure == nullptr || !ok(measure->font(font_for(state->font_names, config->fontId))) ||
+      !ok(measure->size(font_size)) || !ok(measure->text(value.c_str()))) {
     const float fallback_width =
         static_cast<float>(text.length) * static_cast<float>(config->fontSize) * 0.56F;
     return {fallback_width, static_cast<float>(config->fontSize) * 1.25F};
@@ -108,17 +113,17 @@ Clay_Dimensions measure_text(Clay_StringSlice text, Clay_TextElementConfig* conf
 
 void handle_clay_error(Clay_ErrorData error) {
   if (error.errorText.chars != nullptr && error.errorText.length > 0) {
-    TORRVIEW_LOG_ERROR("Clay error: " << std::string_view(error.errorText.chars,
-                                                          static_cast<std::size_t>(
-                                                              error.errorText.length)));
+    TORRVIEW_LOG_ERROR(
+        "Clay error: " << std::string_view(error.errorText.chars,
+                                           static_cast<std::size_t>(error.errorText.length)));
   } else {
     TORRVIEW_LOG_ERROR("Clay error: unknown error");
   }
 }
 
 ClayRenderer::ClayRenderer(SDL_GLContext context, const BasicGlApi& gl_api,
-                           const WindowMetrics& metrics, const char* font_name)
-    : context_(context), gl_api_(gl_api), metrics_(metrics), font_name_(font_name),
+                           const WindowMetrics& metrics, FontNames font_names)
+    : context_(context), gl_api_(gl_api), metrics_(metrics), font_names_(font_names),
       canvas_(tvg::GlCanvas::gen()), svg_cache_() {
   if (!canvas_) {
     throw std::runtime_error("ThorVG GL canvas creation failed");
@@ -321,7 +326,7 @@ void ClayRenderer::draw_text_command(Rect rect, Clay_TextRenderData text_data) {
     throw std::runtime_error("ThorVG failed to create text paint");
   }
 
-  if (!ok(text_paint->font(font_name_)) ||
+  if (!ok(text_paint->font(font_for(font_names_, text_data.fontId))) ||
       !ok(text_paint->size(static_cast<float>(text_data.fontSize) * y_scale())) ||
       !ok(text_paint->text(text.c_str())) ||
       !ok(text_paint->fill(clay_red(text_data.textColor), clay_green(text_data.textColor),

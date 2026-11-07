@@ -30,6 +30,7 @@ torrview_sources = files(
   'ui/player_overlay.cpp',
   'ui/settings_page.cpp',
   'ui/title_page.cpp',
+  'ui/widgets.cpp',
 )
 
 windows_host = host_platform == 'windows'

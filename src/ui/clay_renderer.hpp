@@ -8,16 +8,20 @@
 #include <SDL3/SDL.h>
 #include <thorvg.h>
 
-#include <memory>
+#include <array>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace torrview::ui {
 
+// Indexed by Clay_TextElementConfig::fontId (see ui/theme.hpp).
+using FontNames = std::array<const char*, 2>;
+
 struct TextMeasureState {
-  const char* font_name = nullptr;
+  FontNames font_names = {};
   std::unique_ptr<tvg::Text, decltype(&tvg::Paint::rel)> text = {nullptr, &tvg::Paint::rel};
 };
 
@@ -28,7 +32,7 @@ void handle_clay_error(Clay_ErrorData error);
 class ClayRenderer {
 public:
   ClayRenderer(SDL_GLContext context, const BasicGlApi& gl_api, const WindowMetrics& metrics,
-               const char* font_name);
+               FontNames font_names);
 
   void render(Clay_RenderCommandArray commands);
 
@@ -52,7 +56,7 @@ private:
   SDL_GLContext context_ = nullptr;
   const BasicGlApi& gl_api_;
   const WindowMetrics& metrics_;
-  const char* font_name_ = nullptr;
+  FontNames font_names_ = {};
   std::unique_ptr<tvg::GlCanvas> canvas_;
   std::vector<Rect> clip_stack_;
   std::size_t queued_paint_count_ = 0;

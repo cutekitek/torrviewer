@@ -8,7 +8,9 @@
 #include <thorvg.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <sstream>
@@ -152,8 +154,13 @@ void Application::initialize() {
 
   constexpr int initial_width = 1280;
   constexpr int initial_height = 720;
-  constexpr SDL_WindowFlags window_flags =
+  SDL_WindowFlags window_flags =
       SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+  // UI capture runs the window hidden; see dev_capture_setup().
+  if (const char* capture = SDL_getenv("TORRVIEW_UI_CAPTURE"); capture != nullptr) {
+    dev_capture_dir_ = capture;
+    window_flags |= SDL_WINDOW_HIDDEN;
+  }
 
   window_ = SDL_CreateWindow("Torrview", initial_width, initial_height, window_flags);
   if (window_ == nullptr) {
@@ -197,6 +204,7 @@ void Application::initialize() {
   update_window_title();
   log_startup();
   navigate<ui::TitlePage>();
+  dev_capture_setup();
 }
 
 void Application::run() {
@@ -340,25 +348,32 @@ void Application::initialize_text_renderer() {
   }
   thorvg_initialized_ = true;
 
-  const auto* font = resources::find("fonts/NotoSans-Regular.ttf");
-  if (font == nullptr ||
-      font->size > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
-    throw std::runtime_error("Bundled Noto Sans font resource is missing or too large");
+  constexpr std::array<const char*, 2> font_files = {"fonts/GolosText-Regular.ttf",
+                                                     "fonts/GolosText-SemiBold.ttf"};
+  for (std::size_t index = 0; index < font_files.size(); ++index) {
+    const auto* font = resources::find(font_files[index]);
+    if (font == nullptr ||
+        font->size > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+      throw std::runtime_error(std::string("Bundled font resource is missing or too large: ") +
+                               font_files[index]);
+    }
+    if (tvg::Text::load(font_names_[index], reinterpret_cast<const char*>(font->data),
+                        static_cast<uint32_t>(font->size), font->mime_type.data(),
+                        true) != tvg::Result::Success) {
+      throw std::runtime_error(std::string("ThorVG failed to load bundled font: ") +
+                               font_files[index]);
+    }
   }
 
-  if (tvg::Text::load(font_name_, reinterpret_cast<const char*>(font->data),
-                      static_cast<uint32_t>(font->size), font->mime_type.data(),
-                      true) != tvg::Result::Success) {
-    throw std::runtime_error("ThorVG failed to load bundled Noto Sans font");
-  }
-
-  clay_renderer_ = std::make_unique<ui::ClayRenderer>(context_, basic_gl_, metrics_, font_name_);
+  clay_renderer_ = std::make_unique<ui::ClayRenderer>(context_, basic_gl_, metrics_, font_names_);
 }
 
 void Application::destroy_text_renderer() {
   clay_renderer_.reset();
   if (thorvg_initialized_) {
-    tvg::Text::load(font_name_, nullptr, 0);
+    for (const char* name : font_names_) {
+      tvg::Text::load(name, nullptr, 0);
+    }
   }
 }
 
@@ -376,7 +391,7 @@ void Application::initialize_clay() {
     throw std::runtime_error("Clay initialization failed");
   }
 
-  text_measure_state_.font_name = font_name_;
+  text_measure_state_.font_names = font_names_;
   text_measure_state_.text.reset(tvg::Text::gen());
   Clay_SetMeasureTextFunction(ui::measure_text, &text_measure_state_);
   register_pages();
@@ -779,7 +794,7 @@ void Application::draw() {
   basic_gl_.viewport(0, 0, metrics_.pixel_width, metrics_.pixel_height);
   basic_gl_.disable(GL_DEPTH_TEST);
   basic_gl_.disable(GL_SCISSOR_TEST);
-  basic_gl_.clear_color(12.0F / 255.0F, 13.0F / 255.0F, 15.0F / 255.0F, 1.0F);
+  basic_gl_.clear_color(27.0F / 255.0F, 26.0F / 255.0F, 24.0F / 255.0F, 1.0F);
   basic_gl_.clear(GL_COLOR_BUFFER_BIT);
 
   const auto now = Clock::now();
@@ -809,12 +824,240 @@ void Application::draw() {
   ui_app_.draw(render_context);
   Clay_RenderCommandArray commands = Clay_EndLayout(current_delta_time_);
   clay_renderer_->render(commands);
+  dev_capture_tick();
 
   SDL_GL_SwapWindow(window_);
   if (player_ != nullptr && player_->has_file()) {
     player_->report_swap();
   }
   TORRVIEW_PROFILE_FRAME();
+}
+
+// UI capture (developer tool). Input is synthesized through the same handlers SDL events use, so
+// hover, click, wheel, and keyboard paths are exercised for real. Element lookups go through Clay
+// IDs, so keep the IDs referenced here stable when restructuring pages.
+void Application::dev_capture_setup() {
+  if (dev_capture_dir_.empty()) {
+    return;
+  }
+  SDL_SetWindowSize(window_, 1280, 760);
+  update_window_metrics();
+  const char* torrent_env = SDL_getenv("TORRVIEW_UI_CAPTURE_TORRENT");
+  const char* video_env = SDL_getenv("TORRVIEW_UI_CAPTURE_VIDEO");
+  const std::string torrent = torrent_env != nullptr ? torrent_env : "";
+  const std::string video = video_env != nullptr ? video_env : "";
+  auto add = [this](std::string name, std::function<void()> action, float wait = 0.6F,
+                    std::function<bool()> ready = {}) {
+    dev_steps_.push_back({std::move(name), std::move(action), wait, std::move(ready)});
+  };
+  const float w = static_cast<float>(metrics_.logical_width);
+  const float h = static_cast<float>(metrics_.logical_height);
+
+  add("01-title-empty", [] {}, 1.0F);
+  add("02-title-typing", [this] {
+    dev_key(SDLK_TAB);
+    dev_text("magnet:?xt=urn:btih:");
+  });
+  add("", [this] { dev_key(SDLK_ESCAPE); }, 0.2F);
+  if (!torrent.empty()) {
+    add(
+        "03-files", [this, torrent] { accept_input(parse_file_input(torrent)); }, 1.5F,
+        [this] { return torrent_service_.snapshot().has_metadata; });
+    add("04-files-hover", [this] { dev_hover_id("FileBrowserFileRow", 1); });
+    add("05-files-scrolled", [this, w, h] { dev_wheel(w * 0.5F, h * 0.7F, -8.0F); }, 1.0F);
+    add("06-settings", [this] { navigate<ui::SettingsPage>(Settings::instance().values()); });
+    add("07-settings-editing", [this] {
+      dev_click_id("SettingsProxyUrl");
+      dev_text("socks5://127.0.0.1:9050");
+    });
+    add("", [this] { dev_key(SDLK_ESCAPE); }, 0.2F);
+    add("08-library", [this] { navigate<ui::TitlePage>(); });
+    add("09-library-menu", [this] { dev_click_id("LibraryMenu", 0); });
+    add("10-library-rename", [this] { dev_click_id("LibraryRename"); });
+    add("", [this] { dev_key(SDLK_ESCAPE); }, 0.2F);
+  }
+  if (!video.empty()) {
+    add(
+        "11-player",
+        [this, video, w, h] {
+          accept_input(parse_file_input(video));
+          dev_move(w * 0.5F, h - 40.0F);
+        },
+        2.5F);
+    add("12-player-audio", [this] { dev_click_id("PlayerAudioButton"); });
+    add(
+        "13-player-stats",
+        [this] {
+          dev_click_id("PlayerAudioButton");
+          dev_click_id("PlayerDebugButton");
+        },
+        1.5F);
+    add("14-player-idle", [this, w] { dev_move(w * 0.5F, 60.0F); }, 3.5F);
+  }
+  if (!torrent.empty()) {
+    add(
+        "",
+        [this, torrent] {
+          if (player_ && player_->has_file()) {
+            player_->stop();
+          }
+          accept_input(parse_file_input(torrent));
+        },
+        1.0F, [this] { return torrent_service_.snapshot().has_metadata; });
+    add(
+        "15-player-torrent",
+        [this, w, h] {
+          dev_click_id("FileBrowserFileRow", 2);
+          dev_move(w * 0.5F, h - 40.0F);
+        },
+        5.0F);
+    add("16-player-buffer", [this] { dev_click_id("PlayerBufferButton"); });
+    add(
+        "",
+        [this] {
+          if (player_ && player_->has_file()) {
+            player_->stop();
+          }
+          SDL_SetWindowSize(window_, 720, 640);
+          update_window_metrics();
+          navigate<ui::FileBrowserPage>();
+        },
+        1.0F);
+    add("17-narrow-files", [] {});
+    add("18-narrow-library", [this] { navigate<ui::TitlePage>(); });
+    add("19-narrow-settings",
+        [this] { navigate<ui::SettingsPage>(Settings::instance().values()); });
+  }
+}
+
+void Application::dev_capture_tick() {
+  if (dev_capture_dir_.empty()) {
+    return;
+  }
+  if (dev_step_ >= dev_steps_.size()) {
+    TORRVIEW_LOG_INFO("UI capture finished");
+    running_ = false;
+    return;
+  }
+  DevCaptureStep& step = dev_steps_[dev_step_];
+  const auto now = Clock::now();
+  if (!dev_step_ran_) {
+    if (step.action) {
+      step.action();
+    }
+    dev_step_ran_ = true;
+    dev_step_started_ = now;
+    return;
+  }
+  const float elapsed = std::chrono::duration<float>(now - dev_step_started_).count();
+  const bool ready = !step.ready || step.ready() || elapsed > 20.0F;
+  if (elapsed < step.wait_seconds || !ready) {
+    return;
+  }
+  if (!step.name.empty()) {
+    dev_capture_write(step.name);
+  }
+  ++dev_step_;
+  dev_step_ran_ = false;
+}
+
+void Application::dev_capture_write(const std::string& name) {
+  using ReadPixelsProc = void(APIENTRY*)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*);
+  static auto read_pixels = load_gl_proc<ReadPixelsProc>("glReadPixels");
+  const int width = metrics_.pixel_width;
+  const int height = metrics_.pixel_height;
+  std::vector<unsigned char> pixels(static_cast<std::size_t>(width) *
+                                    static_cast<std::size_t>(height) * 4U);
+  read_pixels(0, 0, width, height, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, pixels.data());
+  for (std::size_t index = 0; index < pixels.size(); index += 4) {
+    std::swap(pixels[index], pixels[index + 2]);
+    pixels[index + 3] = 255;
+  }
+  const std::string path = dev_capture_dir_ + "/" + name + ".bmp";
+  SDL_Surface* surface =
+      SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_ARGB8888, pixels.data(), width * 4);
+  SDL_Surface* flipped = SDL_DuplicateSurface(surface);
+  SDL_FlipSurface(flipped, SDL_FLIP_VERTICAL);
+  SDL_SaveBMP(flipped, path.c_str());
+  SDL_DestroySurface(flipped);
+  SDL_DestroySurface(surface);
+  TORRVIEW_LOG_INFO("UI capture wrote " << path);
+}
+
+void Application::dev_move(float x, float y) {
+  SDL_MouseMotionEvent motion{};
+  motion.type = SDL_EVENT_MOUSE_MOTION;
+  motion.x = x;
+  motion.y = y;
+  motion.state = pointer_.buttons;
+  mouse_motion(motion);
+}
+
+void Application::dev_click(float x, float y) {
+  dev_move(x, y);
+  Clay_SetPointerState({.x = x, .y = y}, false);
+  SDL_MouseButtonEvent button{};
+  button.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+  button.button = SDL_BUTTON_LEFT;
+  button.down = true;
+  button.x = x;
+  button.y = y;
+  button.clicks = 1;
+  mouse_button(button);
+  button.type = SDL_EVENT_MOUSE_BUTTON_UP;
+  button.down = false;
+  mouse_button(button);
+}
+
+void Application::dev_click_id(const char* id, uint32_t index) {
+  const Clay_String string = {
+      .isStaticallyAllocated = false, .length = static_cast<int32_t>(std::strlen(id)), .chars = id};
+  const Clay_ElementData data = Clay_GetElementData(
+      index == UINT32_MAX ? Clay_GetElementId(string) : Clay_GetElementIdWithIndex(string, index));
+  if (!data.found) {
+    TORRVIEW_LOG_WARNING("UI capture: element not found " << id << " " << index);
+    return;
+  }
+  dev_click(data.boundingBox.x + data.boundingBox.width * 0.5F,
+            data.boundingBox.y + data.boundingBox.height * 0.5F);
+}
+
+void Application::dev_hover_id(const char* id, uint32_t index) {
+  const Clay_String string = {
+      .isStaticallyAllocated = false, .length = static_cast<int32_t>(std::strlen(id)), .chars = id};
+  const Clay_ElementData data = Clay_GetElementData(
+      index == UINT32_MAX ? Clay_GetElementId(string) : Clay_GetElementIdWithIndex(string, index));
+  if (data.found) {
+    dev_move(data.boundingBox.x + data.boundingBox.width * 0.5F,
+             data.boundingBox.y + data.boundingBox.height * 0.5F);
+  }
+}
+
+void Application::dev_wheel(float x, float y, float dy) {
+  dev_move(x, y);
+  SDL_MouseWheelEvent wheel{};
+  wheel.type = SDL_EVENT_MOUSE_WHEEL;
+  wheel.y = dy;
+  wheel.mouse_x = x;
+  wheel.mouse_y = y;
+  wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+  mouse_wheel(wheel);
+}
+
+void Application::dev_key(SDL_Keycode key, SDL_Keymod mod) {
+  SDL_KeyboardEvent event{};
+  event.type = SDL_EVENT_KEY_DOWN;
+  event.key = key;
+  event.mod = mod;
+  event.down = true;
+  key_down(event);
+}
+
+void Application::dev_text(const char* text) {
+  SDL_TextInputEvent event{};
+  event.type = SDL_EVENT_TEXT_INPUT;
+  event.text = text;
+  text_input(event);
 }
 
 void Application::log_startup() const {

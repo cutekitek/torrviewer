@@ -5,6 +5,7 @@
 #include "settings.hpp"
 #include "torrent_service.hpp"
 #include "ui/page.hpp"
+#include "ui/widgets.hpp"
 #include "window_state.hpp"
 
 #include "clay.h"
@@ -63,7 +64,6 @@ public:
   void append_cache_size_text(std::string_view value);
   void backspace_cache_size_text();
   void commit_cache_size_text();
-  void set_font_size(int font_size);
   void close_audio_menu();
   void close_menus();
 
@@ -85,18 +85,16 @@ private:
     audio,
   };
 
-  std::string_view retain_frame_text(std::string value);
-  void text(std::string_view value, uint16_t font_size, Clay_Color color,
-            Clay_TextElementConfigWrapMode wrap = CLAY_TEXT_WRAP_NONE);
   const char* icon_path(Icon icon) const;
-  void icon(Icon icon, float size = 18.0F);
-  void icon_button(Clay_ElementId id, Icon icon, bool emphasized = false);
+  void control_button(Clay_ElementId id, Icon icon, float glyph = 20.0F);
+  void text_button(Clay_ElementId id, std::string_view label, bool active);
   void audio_track_row(Clay_ElementId id, std::string_view label, bool active);
-  void cache_size_input(std::string_view value, bool focused);
+  void timeline(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent, float width);
   void piece_rail(const TorrentSnapshot& torrent, float width);
   void status_overlay(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent);
   void debug_overlay(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent,
                      float max_width);
+  void stat_row(std::string_view key, std::string value, Clay_Color color);
   void bitrate_graph(float width);
   void update_bitrate_history(const PlaybackSnapshot& snapshot);
   bool key_down(const SDL_KeyboardEvent& key);
@@ -109,8 +107,6 @@ private:
   void return_to_file_browser_after_eof();
   [[nodiscard]] bool controls_visible() const;
   [[nodiscard]] bool has_player_file() const;
-  [[nodiscard]] uint16_t scaled_font_size(uint16_t font_size) const;
-  [[nodiscard]] float line_height(uint16_t font_size) const;
 
   Application& app_;
   Settings& settings_;
@@ -118,6 +114,7 @@ private:
   Clay_Context* clay_context_ = nullptr;
   MpvPlayer* player_ = nullptr;
   TorrentService& torrent_service_;
+  Widgets ui_;
   bool ids_initialized_ = false;
   bool controls_visible_ = true;
   bool dragging_volume_ = false;
@@ -146,14 +143,12 @@ private:
   std::size_t selected_audio_track_index_ = 0;
   int selected_cache_size_mib_ = 256;
   int last_rendered_cache_size_mib_ = 256;
-  int font_size_ = 13;
   bool buffer_input_focused_ = false;
   std::string buffer_input_text_;
   std::vector<Clay_ElementId> audio_track_row_ids_;
   std::deque<BitrateSample> bitrate_history_;
   std::chrono::steady_clock::time_point last_bitrate_sample_;
   std::string bitrate_history_path_;
-  std::deque<std::string> frame_strings_;
 };
 
 } // namespace torrview::ui

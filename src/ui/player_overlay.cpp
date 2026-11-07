@@ -16,57 +16,14 @@
 namespace torrview::ui {
 namespace {
 
-constexpr Clay_Color color_text = {235.0F, 238.0F, 243.0F, 255.0F};
-constexpr Clay_Color color_muted = {166.0F, 174.0F, 186.0F, 255.0F};
-constexpr Clay_Color color_panel = {12.0F, 13.0F, 15.0F, 218.0F};
-constexpr Clay_Color color_button = {34.0F, 38.0F, 44.0F, 232.0F};
-constexpr Clay_Color color_button_emphasis = {76.0F, 176.0F, 154.0F, 242.0F};
-constexpr Clay_Color color_menu = {24.0F, 27.0F, 31.0F, 242.0F};
-constexpr Clay_Color color_rail = {67.0F, 73.0F, 83.0F, 255.0F};
-constexpr Clay_Color color_progress = {76.0F, 176.0F, 154.0F, 255.0F};
-constexpr Clay_Color color_requested = {223.0F, 179.0F, 83.0F, 255.0F};
-constexpr Clay_Color color_evictable = {92.0F, 105.0F, 122.0F, 255.0F};
-constexpr Clay_Color color_evicted = {42.0F, 47.0F, 55.0F, 255.0F};
-constexpr Clay_Color color_failed = {214.0F, 94.0F, 82.0F, 255.0F};
-constexpr Clay_Color color_overlay = {12.0F, 13.0F, 15.0F, 224.0F};
-constexpr Clay_Color color_border = {198.0F, 203.0F, 214.0F, 255.0F};
-constexpr float icon_button_size = 36.0F;
-constexpr float volume_bar_width = 138.0F;
+constexpr float control_size = 36.0F;
+constexpr float volume_bar_width = 96.0F;
 constexpr float controls_reveal_band = 72.0F;
 constexpr auto controls_hide_delay = std::chrono::milliseconds(2400);
 constexpr auto bitrate_sample_interval = std::chrono::milliseconds(500);
 constexpr std::size_t max_bitrate_samples = 96;
-constexpr float bitrate_graph_height = 82.0F;
-constexpr Clay_Padding text_padding = {4, 4, 4, 4};
-
-Clay_String clay_string(std::string_view value) {
-  const std::size_t max_length = static_cast<std::size_t>(std::numeric_limits<int32_t>::max());
-  const std::size_t length = std::min(value.size(), max_length);
-  return {.isStaticallyAllocated = false,
-          .length = static_cast<int32_t>(length),
-          .chars = value.data()};
-}
-
-std::string format_time(double seconds) {
-  if (seconds < 0.0 || !std::isfinite(seconds)) {
-    seconds = 0.0;
-  }
-
-  const auto total = static_cast<int>(std::llround(seconds));
-  const int hours = total / 3600;
-  const int minutes = (total / 60) % 60;
-  const int secs = total % 60;
-
-  std::ostringstream out;
-  if (hours > 0) {
-    out << hours << ':';
-    out << std::setw(2) << std::setfill('0') << minutes << ':';
-  } else {
-    out << minutes << ':';
-  }
-  out << std::setw(2) << std::setfill('0') << secs;
-  return out.str();
-}
+constexpr float bitrate_graph_height = 72.0F;
+constexpr float stat_key_width = 76.0F;
 
 const TorrentFileInfo* find_torrent_file(const TorrentSnapshot& torrent, int file_index) {
   for (const TorrentFileInfo& file : torrent.files) {
@@ -77,27 +34,13 @@ const TorrentFileInfo* find_torrent_file(const TorrentSnapshot& torrent, int fil
   return nullptr;
 }
 
-std::string compact_title(std::string title) {
-  constexpr std::size_t max_title_length = 46;
-  if (title.size() <= max_title_length) {
-    return title;
-  }
-
-  return title.substr(0, max_title_length - 3) + "...";
-}
-
 std::string filename_from_path(std::string_view value) {
   if (value.empty()) {
-    return "Local playback";
+    return "Local video";
   }
-
-  std::filesystem::path path{std::string(value)};
-  std::string filename = path.filename().string();
-  if (filename.empty()) {
-    filename = std::string(value);
-  }
-
-  return compact_title(std::move(filename));
+  std::filesystem::path path{std::u8string(value.begin(), value.end())};
+  const std::u8string filename = path.filename().u8string();
+  return filename.empty() ? std::string(value) : std::string(filename.begin(), filename.end());
 }
 
 std::string playback_title(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent) {
@@ -106,21 +49,11 @@ std::string playback_title(const PlaybackSnapshot& snapshot, const TorrentSnapsh
         file != nullptr) {
       return filename_from_path(file->path);
     }
-
     if (!snapshot.media_title.empty()) {
-      return compact_title(snapshot.media_title);
+      return snapshot.media_title;
     }
   }
-
   return filename_from_path(snapshot.path);
-}
-
-std::string format_bytes(std::int64_t bytes) {
-  constexpr double mib = 1024.0 * 1024.0;
-  const double value = static_cast<double>(std::max<std::int64_t>(0, bytes));
-  std::ostringstream out;
-  out << std::fixed << std::setprecision(value >= 10.0 * mib ? 0 : 1) << value / mib << " MiB";
-  return out.str();
 }
 
 std::string format_bitrate(double bits_per_second) {
@@ -134,33 +67,33 @@ std::string format_bitrate(double bits_per_second) {
   } else if (value > 0.0) {
     out << std::fixed << std::setprecision(0) << value << " b/s";
   } else {
-    out << "--";
+    out << "\xE2\x80\x93";
   }
   return out.str();
 }
 
 std::string metadata_value(std::string_view value) {
-  return value.empty() ? std::string("--") : std::string(value);
+  return value.empty() ? std::string("\xE2\x80\x93") : std::string(value);
 }
 
 Clay_Color piece_color(TorrentPieceState state) {
   switch (state) {
   case TorrentPieceState::missing:
-    return color_rail;
+    return theme::piece_missing;
   case TorrentPieceState::requested:
   case TorrentPieceState::partial:
-    return color_requested;
+    return theme::signal;
   case TorrentPieceState::verified:
   case TorrentPieceState::retained:
-    return color_progress;
+    return theme::piece_have;
   case TorrentPieceState::evictable:
-    return color_evictable;
+    return theme::piece_evictable;
   case TorrentPieceState::evicted:
-    return color_evicted;
+    return theme::piece_evicted;
   case TorrentPieceState::failed:
-    return color_failed;
+    return theme::fault;
   }
-  return color_rail;
+  return theme::piece_missing;
 }
 
 int piece_state_rank(TorrentPieceState state) {
@@ -210,7 +143,7 @@ PlayerOverlay::PlayerOverlay(Application& app, Settings& settings, PointerState&
                              Clay_Context* clay_context, MpvPlayer* player,
                              TorrentService& torrent_service)
     : app_(app), settings_(settings), pointer_(pointer), clay_context_(clay_context),
-      player_(player), torrent_service_(torrent_service),
+      player_(player), torrent_service_(torrent_service), ui_(settings),
       controls_last_hover_(std::chrono::steady_clock::now()) {
   initialize_ids();
 }
@@ -273,7 +206,7 @@ bool PlayerOverlay::handle_event(const SDL_Event& event) {
 void PlayerOverlay::close() {
   close_menus();
   dragging_volume_ = false;
-  frame_strings_.clear();
+  ui_.begin_frame();
   audio_track_row_ids_.clear();
 }
 
@@ -298,40 +231,8 @@ void PlayerOverlay::initialize_ids() {
 }
 
 void PlayerOverlay::begin_frame() {
-  frame_strings_.clear();
+  ui_.begin_frame();
   audio_track_row_ids_.clear();
-}
-
-std::string_view PlayerOverlay::retain_frame_text(std::string value) {
-  frame_strings_.push_back(std::move(value));
-  return frame_strings_.back();
-}
-
-void PlayerOverlay::text(std::string_view value, uint16_t font_size, Clay_Color color,
-                         Clay_TextElementConfigWrapMode wrap) {
-  const uint16_t scaled_size = scaled_font_size(font_size);
-  CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
-                                      .height = CLAY_SIZING_FIT(0.0F)},
-                          .padding = text_padding,
-                          .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
-    CLAY_TEXT(clay_string(value),
-              CLAY_TEXT_CONFIG({.textColor = color,
-                                .fontSize = scaled_size,
-                                .lineHeight = static_cast<uint16_t>(
-                                    std::lround(static_cast<float>(scaled_size) * 1.25F)),
-                                .wrapMode = wrap}));
-  }
-}
-
-uint16_t PlayerOverlay::scaled_font_size(uint16_t font_size) const {
-  const float scale = static_cast<float>(std::clamp(settings_.values().font_size, 9, 24)) /
-                      13.0F;
-  return static_cast<uint16_t>(std::clamp<int>(static_cast<int>(std::lround(font_size * scale)), 8,
-                                               32));
-}
-
-float PlayerOverlay::line_height(uint16_t font_size) const {
-  return static_cast<float>(scaled_font_size(font_size)) * 1.25F;
 }
 
 const char* PlayerOverlay::icon_path(Icon icon) const {
@@ -359,80 +260,102 @@ const char* PlayerOverlay::icon_path(Icon icon) const {
   return "";
 }
 
-void PlayerOverlay::icon(Icon icon_value, float size) {
-  CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(size),
-                                      .height = CLAY_SIZING_FIXED(size)}},
-                .image = {.imageData = const_cast<char*>(icon_path(icon_value))}}) {}
+void PlayerOverlay::control_button(Clay_ElementId id, Icon icon_value, float glyph) {
+  ui_.icon_button(id, icon_path(icon_value), false, control_size, glyph);
 }
 
-void PlayerOverlay::icon_button(Clay_ElementId id, Icon icon_value, bool emphasized) {
-  const Clay_Color background = emphasized ? color_button_emphasis : color_button;
-  const float button_size = std::max(icon_button_size, line_height(12) + 12.0F);
-  CLAY(id,
-       {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(button_size),
-                              .height = CLAY_SIZING_FIXED(button_size)},
-                   .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-        .backgroundColor = background,
-        .cornerRadius = CLAY_CORNER_RADIUS(6.0F)}) {
-    icon(icon_value);
+void PlayerOverlay::text_button(Clay_ElementId id, std::string_view label, bool active) {
+  const bool hovered = Clay_PointerOver(id);
+  CLAY(id, {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
+                                  .height = CLAY_SIZING_FIXED(control_size)},
+                       .padding = {10, 10, 0, 0},
+                       .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+            .backgroundColor = active ? theme::lifted : (hovered ? theme::raised : theme::clear),
+            .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_control)}) {
+    ui_.text(label, theme::size_body, active || hovered ? theme::lamp : theme::ash);
   }
 }
 
 void PlayerOverlay::audio_track_row(Clay_ElementId id, std::string_view label, bool active) {
-  const Clay_Color background = active ? color_button_emphasis : color_button;
-  CLAY(id,
-       {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                              .height = CLAY_SIZING_FIT(0.0F)},
-                   .padding = {10, 10, 0, 0},
-                   .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}},
-        .backgroundColor = background,
-        .cornerRadius = CLAY_CORNER_RADIUS(5.0F)}) {
-    text(label, 12, active ? color_text : color_muted, CLAY_TEXT_WRAP_NONE);
+  const bool hovered = Clay_PointerOver(id);
+  CLAY(id, {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
+                                  .height = CLAY_SIZING_FIXED(ui_.line(theme::size_body) + 14.0F)},
+                       .padding = {12, 12, 0, 0},
+                       .childGap = 10,
+                       .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}},
+            .backgroundColor = hovered ? theme::rule : theme::clear,
+            .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_control)}) {
+    CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(6.0F),
+                                        .height = CLAY_SIZING_FIXED(6.0F)}},
+                  .backgroundColor = active ? theme::lamp : theme::clear,
+                  .cornerRadius = CLAY_CORNER_RADIUS(3.0F)}) {}
+    ui_.text(label, theme::size_body, active ? theme::lamp : theme::ash);
   }
 }
 
-void PlayerOverlay::cache_size_input(std::string_view value, bool focused) {
-  CLAY(buffer_input_id_,
-       {.layout = {.sizing = {.width = CLAY_SIZING_GROW(160.0F),
-                              .height = CLAY_SIZING_FIT(0.0F)},
-                   .padding = {12, 12, 0, 0},
-                   .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-        .backgroundColor = {14.0F, 15.0F, 17.0F, 255.0F},
-        .cornerRadius = CLAY_CORNER_RADIUS(8.0F),
-        .border = {.color = focused ? color_button_emphasis : color_border,
-                   .width = {.left = 1, .right = 1, .top = 1, .bottom = 1}}}) {
-    text(value.empty() ? std::string_view(" ") : value, 20, color_text, CLAY_TEXT_WRAP_NONE);
+// One rail carries both the playhead and the torrent's piece map underneath it, so what has
+// arrived and where playback is can be read in a single glance.
+void PlayerOverlay::timeline(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent,
+                             float width) {
+  const float progress =
+      snapshot.duration > 0.0
+          ? static_cast<float>(std::clamp(snapshot.time_pos / snapshot.duration, 0.0, 1.0))
+          : 0.0F;
+  const bool hovered = Clay_PointerOver(timeline_id_);
+  const float rail = hovered ? 6.0F : 4.0F;
+  const bool pieces = !torrent.piece_states.empty();
+
+  CLAY(timeline_id_,
+       {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F), .height = CLAY_SIZING_FIXED(18.0F)},
+                   .childGap = 2,
+                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                   .layoutDirection = CLAY_TOP_TO_BOTTOM}}) {
+    CLAY(CLAY_ID("PlayerRail"), {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
+                                                       .height = CLAY_SIZING_FIXED(rail)}},
+                                 .backgroundColor = {255.0F, 255.0F, 255.0F, 46.0F},
+                                 .cornerRadius = CLAY_CORNER_RADIUS(rail * 0.5F)}) {
+      CLAY(CLAY_ID("PlayerProgress"),
+           {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(std::max(rail, width * progress)),
+                                  .height = CLAY_SIZING_GROW(0.0F)}},
+            .backgroundColor = theme::lamp,
+            .cornerRadius = CLAY_CORNER_RADIUS(rail * 0.5F)}) {}
+    }
+    if (pieces) {
+      piece_rail(torrent, width);
+    }
+    CLAY(CLAY_ID("PlayerPlayhead"),
+         {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(12.0F),
+                                .height = CLAY_SIZING_FIXED(12.0F)}},
+          .backgroundColor = theme::lamp,
+          .cornerRadius = CLAY_CORNER_RADIUS(6.0F),
+          .floating = {
+              .offset = {std::clamp(width * progress, 0.0F, width) - 6.0F, pieces ? -2.5F : 0.0F},
+              .parentId = timeline_id_.id,
+              .zIndex = 4,
+              .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_CENTER,
+                               .parent = CLAY_ATTACH_POINT_LEFT_CENTER},
+              .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+              .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+              .clipTo = CLAY_CLIP_TO_NONE}}) {}
   }
 }
 
 void PlayerOverlay::piece_rail(const TorrentSnapshot& torrent, float width) {
-  CLAY(CLAY_ID("PlayerPieceRail"),
-       {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                              .height = CLAY_SIZING_FIXED(9.0F)},
-                   .childGap = 1},
-        .backgroundColor = color_rail,
-        .cornerRadius = CLAY_CORNER_RADIUS(4.0F),
-        .clip = {.horizontal = true, .vertical = true}}) {
-    if (torrent.piece_states.empty()) {
-      CLAY(CLAY_ID("PlayerPieceRailEmpty"),
+  CLAY(CLAY_ID("PlayerPieceRail"), {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
+                                                          .height = CLAY_SIZING_FIXED(3.0F)}}}) {
+    const std::size_t piece_count = torrent.piece_states.size();
+    const std::size_t max_segments =
+        static_cast<std::size_t>(std::clamp(width / 4.0F, 32.0F, 320.0F));
+    const std::size_t segments = std::min(piece_count, max_segments);
+    for (std::size_t segment = 0; segment < segments; ++segment) {
+      const std::size_t begin = (segment * piece_count) / segments;
+      const std::size_t end = std::max(begin + 1, ((segment + 1) * piece_count) / segments);
+      const TorrentPieceState state = dominant_piece_state(torrent.piece_states, begin, end);
+      CLAY(Clay_GetElementIdWithIndex(CLAY_STRING("PlayerPieceRailSegment"),
+                                      static_cast<uint32_t>(segment)),
            {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
                                   .height = CLAY_SIZING_GROW(0.0F)}},
-            .backgroundColor = color_evicted}) {}
-    } else {
-      const std::size_t piece_count = torrent.piece_states.size();
-      const std::size_t max_segments =
-          static_cast<std::size_t>(std::clamp(width / 8.0F, 32.0F, 120.0F));
-      const std::size_t segments = std::min(piece_count, max_segments);
-      for (std::size_t segment = 0; segment < segments; ++segment) {
-        const std::size_t begin = (segment * piece_count) / segments;
-        const std::size_t end = std::max(begin + 1, ((segment + 1) * piece_count) / segments);
-        const TorrentPieceState state = dominant_piece_state(torrent.piece_states, begin, end);
-        CLAY(Clay_GetElementIdWithIndex(CLAY_STRING("PlayerPieceRailSegment"),
-                                        static_cast<uint32_t>(segment)),
-             {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                    .height = CLAY_SIZING_GROW(0.0F)}},
-              .backgroundColor = piece_color(state)}) {}
-      }
+            .backgroundColor = piece_color(state)}) {}
     }
   }
 }
@@ -441,44 +364,48 @@ void PlayerOverlay::status_overlay(const PlaybackSnapshot& snapshot,
                                    const TorrentSnapshot& torrent) {
   std::string heading;
   std::string detail;
-  Clay_Color accent = color_progress;
+  Clay_Color accent = theme::lamp;
 
   if (torrent.state == TorrentLoadState::error || torrent.state == TorrentLoadState::unavailable) {
-    heading = "Torrent error";
+    heading = "The torrent stopped working";
     detail = !torrent.error.empty() ? torrent.error : torrent.status;
-    accent = color_failed;
+    accent = theme::fault;
   } else if (torrent.stalled) {
-    heading = "Stalled";
+    heading = "No peers are sending this part";
     detail = torrent.buffer_status.empty() ? torrent.status : torrent.buffer_status;
-    accent = color_failed;
+    accent = theme::fault;
   } else if (torrent.buffering) {
     heading = "Buffering";
     detail = torrent.buffer_status.empty() ? torrent.status : torrent.buffer_status;
-    accent = color_requested;
+    // The service reports "Buffering - 6 peers - 16 KiB/s"; the heading already says it.
+    if (detail.starts_with("Buffering - ")) {
+      detail.erase(0, 12);
+    }
+    for (std::size_t at = detail.find(" - "); at != std::string::npos;
+         at = detail.find(" - ", at)) {
+      detail.replace(at, 3, ", ");
+    }
+    accent = theme::signal;
   } else if (snapshot.status.find(':') != std::string::npos) {
-    heading = "Playback error";
+    heading = "This video cannot be played";
     detail = snapshot.status;
-    accent = color_failed;
+    accent = theme::fault;
   } else if (snapshot.status == "Loading" || !snapshot.loaded) {
-    heading = "Loading";
-    detail = snapshot.status.empty() ? "Opening media" : snapshot.status;
+    heading = "Opening";
+    detail = snapshot.status == "Loading" ? std::string() : snapshot.status;
   } else {
     return;
   }
 
-  if (detail.empty()) {
-    detail = "Preparing playback";
-  }
-
   CLAY(CLAY_ID("PlayerCenterStatusOverlay"),
-       {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F, 520.0F),
+       {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F, 480.0F),
                               .height = CLAY_SIZING_FIT(0.0F)},
-                   .padding = {18, 18, 14, 14},
-                   .childGap = 8,
+                   .padding = {20, 20, 14, 16},
+                   .childGap = 4,
                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER},
                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
-        .backgroundColor = color_overlay,
-        .cornerRadius = CLAY_CORNER_RADIUS(8.0F),
+        .backgroundColor = theme::veil,
+        .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_menu),
         .floating = {.offset = {0.0F, -36.0F},
                      .parentId = root_id_.id,
                      .zIndex = 15,
@@ -487,169 +414,180 @@ void PlayerOverlay::status_overlay(const PlaybackSnapshot& snapshot,
                      .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
                      .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
                      .clipTo = CLAY_CLIP_TO_NONE}}) {
-    text(retain_frame_text(heading), 16, accent, CLAY_TEXT_WRAP_NONE);
-    text(retain_frame_text(detail), 12, color_muted, CLAY_TEXT_WRAP_WORDS);
+    ui_.text(ui_.keep(heading), theme::size_lead, accent, theme::font_semibold);
+    if (!detail.empty()) {
+      ui_.text(ui_.keep(detail), theme::size_caption, theme::ash, theme::font_regular,
+               CLAY_TEXT_WRAP_WORDS);
+    }
   }
 }
 
-void PlayerOverlay::debug_overlay(const PlaybackSnapshot& snapshot,
-                                  const TorrentSnapshot& torrent, float max_width) {
+void PlayerOverlay::stat_row(std::string_view key, std::string value, Clay_Color color) {
+  CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F)}, .childGap = 8}}) {
+    CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(stat_key_width)}}}) {
+      ui_.text(key, theme::size_caption, theme::smoke);
+    }
+    CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F)}}}) {
+      ui_.text(ui_.keep(std::move(value)), theme::size_caption, color, theme::font_regular,
+               CLAY_TEXT_WRAP_WORDS);
+    }
+  }
+}
+
+void PlayerOverlay::debug_overlay(const PlaybackSnapshot& snapshot, const TorrentSnapshot& torrent,
+                                  float max_width) {
   const PlaybackDiagnostics& diagnostics = snapshot.diagnostics;
   const VideoPlaybackMetadata& video = diagnostics.video;
   const AudioPlaybackMetadata& audio = diagnostics.audio;
 
   std::ostringstream video_line;
-  video_line << "VIDEO  " << metadata_value(video.codec);
+  video_line << metadata_value(video.codec);
   if (!video.codec_profile.empty()) {
-    video_line << " / " << video.codec_profile;
+    video_line << ' ' << video.codec_profile;
   }
   if (video.width > 0 && video.height > 0) {
-    video_line << "  " << video.width << 'x' << video.height;
+    video_line << ", " << video.width << "\xC3\x97" << video.height;
   }
   if (video.fps > 0.0) {
-    video_line << " @ " << std::fixed << std::setprecision(2) << video.fps << " fps";
+    video_line << ", " << std::fixed << std::setprecision(2) << video.fps << " fps";
   }
 
   std::ostringstream pixel_line;
-  pixel_line << "PIXEL  " << metadata_value(video.pixel_format);
+  pixel_line << metadata_value(video.pixel_format);
   if (!video.hardware_pixel_format.empty()) {
-    pixel_line << " / " << video.hardware_pixel_format;
+    pixel_line << " via " << video.hardware_pixel_format;
   }
   if (!video.color_matrix.empty()) {
-    pixel_line << "  COLOR " << video.color_matrix;
+    pixel_line << ", " << video.color_matrix;
   }
 
   std::ostringstream audio_line;
-  audio_line << "AUDIO  " << metadata_value(audio.codec);
+  audio_line << metadata_value(audio.codec);
   if (!audio.codec_profile.empty()) {
-    audio_line << " / " << audio.codec_profile;
+    audio_line << ' ' << audio.codec_profile;
   }
   if (audio.sample_rate > 0) {
-    audio_line << "  " << std::fixed << std::setprecision(1)
+    audio_line << ", " << std::fixed << std::setprecision(1)
                << static_cast<double>(audio.sample_rate) / 1000.0 << " kHz";
   }
   if (!audio.channels.empty()) {
-    audio_line << "  " << audio.channels;
+    audio_line << ", " << audio.channels;
   } else if (audio.channel_count > 0) {
-    audio_line << "  " << audio.channel_count << " ch";
+    audio_line << ", " << audio.channel_count << " ch";
   }
   if (!audio.sample_format.empty()) {
-    audio_line << "  " << audio.sample_format;
+    audio_line << ", " << audio.sample_format;
   }
 
   std::ostringstream decoder_line;
-  decoder_line << "DECODER  V " << metadata_value(video.decoder) << "  A "
-               << metadata_value(audio.decoder) << "  HW "
+  decoder_line << "video " << metadata_value(video.decoder) << ", audio "
+               << metadata_value(audio.decoder) << ", hardware "
                << metadata_value(diagnostics.hardware_decoder);
 
   std::ostringstream timing_line;
-  timing_line << std::showpos << std::fixed << std::setprecision(3) << "A/V "
-              << diagnostics.av_sync << " s" << std::noshowpos << "  DROPPED "
-              << diagnostics.dropped_frames << " / " << diagnostics.decoder_dropped_frames;
+  timing_line << std::showpos << std::fixed << std::setprecision(3) << diagnostics.av_sync << " s"
+              << std::noshowpos << ", dropped " << diagnostics.dropped_frames << " / "
+              << diagnostics.decoder_dropped_frames;
 
-  const std::string current_bitrate =
-      "V " + format_bitrate(video.bitrate_bps) + "  A " + format_bitrate(audio.bitrate_bps);
-  const float panel_width = std::max(220.0F, max_width);
+  const float panel_width = std::max(240.0F, max_width);
 
   CLAY(CLAY_ID("PlayerDebugOverlay"),
        {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(panel_width),
                               .height = CLAY_SIZING_FIT(0.0F)},
-                   .padding = {14, 14, 12, 12},
-                   .childGap = 6,
+                   .padding = {16, 16, 14, 16},
+                   .childGap = 5,
                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
-        .backgroundColor = color_overlay,
-        .cornerRadius = CLAY_CORNER_RADIUS(8.0F),
-        .floating = {.offset = {18.0F, 18.0F},
+        .backgroundColor = theme::veil,
+        .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_menu),
+        .floating = {.offset = {16.0F, 16.0F},
                      .parentId = root_id_.id,
                      .zIndex = 18,
                      .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP,
                                       .parent = CLAY_ATTACH_POINT_LEFT_TOP},
                      .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
                      .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
-                     .clipTo = CLAY_CLIP_TO_NONE},
-        .border = {.color = color_rail,
-                   .width = {.left = 1, .right = 1, .top = 1, .bottom = 1}}}) {
-    CLAY(CLAY_ID("PlayerDebugHeader"),
-         {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                .height = CLAY_SIZING_FIT(0.0F)},
-                     .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
-      text("PLAYBACK DEBUG", 13, color_progress, CLAY_TEXT_WRAP_NONE);
-      CLAY(CLAY_ID("PlayerDebugHeaderSpacer"),
-           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                  .height = CLAY_SIZING_FIXED(1.0F)}}}) {}
-      text(retain_frame_text(snapshot.paused ? "PAUSED" : current_bitrate), 11, color_muted,
-           CLAY_TEXT_WRAP_NONE);
+                     .clipTo = CLAY_CLIP_TO_NONE}}) {
+    CLAY(CLAY_ID("PlayerDebugHeader"), {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F)},
+                                                   .padding = {0, 0, 0, 6},
+                                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+      ui_.text("Playback stats", theme::size_body, theme::lamp, theme::font_semibold);
+      ui_.spacer();
+      ui_.text(snapshot.paused ? "Paused" : "Playing", theme::size_caption, theme::smoke);
     }
-
-    text(retain_frame_text("CONTAINER  " + metadata_value(diagnostics.file_format)), 11,
-         color_muted, CLAY_TEXT_WRAP_NONE);
-    text(retain_frame_text(video_line.str()), 11, color_text, CLAY_TEXT_WRAP_WORDS);
-    text(retain_frame_text(pixel_line.str()), 11, color_muted, CLAY_TEXT_WRAP_WORDS);
-    text(retain_frame_text(audio_line.str()), 11, color_text, CLAY_TEXT_WRAP_WORDS);
-    text(retain_frame_text(decoder_line.str()), 11, color_muted, CLAY_TEXT_WRAP_WORDS);
-    text(retain_frame_text(timing_line.str()), 11, color_muted, CLAY_TEXT_WRAP_NONE);
-
-    CLAY(CLAY_ID("PlayerDebugBitrateLegend"),
-         {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                .height = CLAY_SIZING_FIT(0.0F)},
-                     .childGap = 12,
-                     .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
-      text("BITRATE HISTORY", 10, color_muted, CLAY_TEXT_WRAP_NONE);
-      text("VIDEO", 10, color_progress, CLAY_TEXT_WRAP_NONE);
-      text("AUDIO", 10, color_requested, CLAY_TEXT_WRAP_NONE);
-      CLAY(CLAY_ID("PlayerDebugLegendSpacer"),
-           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                  .height = CLAY_SIZING_FIXED(1.0F)}}}) {}
-      text(retain_frame_text(current_bitrate), 10, color_muted, CLAY_TEXT_WRAP_NONE);
-    }
-    bitrate_graph(panel_width - 28.0F);
-
+    stat_row("Container", metadata_value(diagnostics.file_format), theme::lamp);
+    stat_row("Video", video_line.str(), theme::lamp);
+    stat_row("Pixels", pixel_line.str(), theme::ash);
+    stat_row("Audio", audio_line.str(), theme::lamp);
+    stat_row("Decoders", decoder_line.str(), theme::ash);
+    stat_row("A/V sync", timing_line.str(), theme::ash);
     if (has_torrent_playback_state(torrent)) {
       std::ostringstream network_line;
-      network_line << "SWARM  " << torrent.peers << " peers  "
+      network_line << torrent.peers << " peers, "
                    << format_bitrate(static_cast<double>(torrent.download_rate) * 8.0)
-                   << "  CACHE " << format_bytes(torrent.cache_bytes_used) << " / "
-                   << format_bytes(torrent.cache_bytes_limit);
-      text(retain_frame_text(network_line.str()), 10,
-           torrent.stalled ? color_failed : color_muted, CLAY_TEXT_WRAP_WORDS);
+                   << ", buffer " << format_size(torrent.cache_bytes_used) << " of "
+                   << format_size(torrent.cache_bytes_limit);
+      stat_row("Swarm", network_line.str(), torrent.stalled ? theme::fault : theme::ash);
     }
+
+    CLAY(CLAY_ID("PlayerDebugBitrateLegend"),
+         {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F)},
+                     .padding = {0, 0, 8, 2},
+                     .childGap = 6,
+                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+      ui_.text("Bitrate", theme::size_caption, theme::smoke);
+      ui_.gap(8.0F, 1.0F);
+      const auto swatch = [](Clay_Color color) {
+        CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(8.0F),
+                                            .height = CLAY_SIZING_FIXED(8.0F)}},
+                      .backgroundColor = color,
+                      .cornerRadius = CLAY_CORNER_RADIUS(2.0F)}) {}
+      };
+      swatch(theme::piece_have);
+      ui_.text(ui_.keep("video " + format_bitrate(video.bitrate_bps)), theme::size_caption,
+               theme::ash);
+      ui_.gap(8.0F, 1.0F);
+      swatch(theme::signal);
+      ui_.text(ui_.keep("audio " + format_bitrate(audio.bitrate_bps)), theme::size_caption,
+               theme::ash);
+    }
+    bitrate_graph(panel_width - 32.0F);
   }
 }
 
 void PlayerOverlay::bitrate_graph(float width) {
-  const std::size_t max_columns =
-      static_cast<std::size_t>(std::clamp(width / 5.0F, 24.0F, 96.0F));
-  const std::size_t first = bitrate_history_.size() > max_columns
-                                ? bitrate_history_.size() - max_columns
-                                : 0;
+  const std::size_t max_columns = static_cast<std::size_t>(std::clamp(width / 5.0F, 24.0F, 96.0F));
+  const float column_width = std::max(1.0F, (width - static_cast<float>(max_columns - 1)) /
+                                                static_cast<float>(max_columns));
+  const std::size_t first =
+      bitrate_history_.size() > max_columns ? bitrate_history_.size() - max_columns : 0;
   double peak_bps = 1.0;
   for (std::size_t index = first; index < bitrate_history_.size(); ++index) {
-    peak_bps = std::max(peak_bps, bitrate_history_[index].video_bps +
-                                     bitrate_history_[index].audio_bps);
+    peak_bps =
+        std::max(peak_bps, bitrate_history_[index].video_bps + bitrate_history_[index].audio_bps);
   }
 
   CLAY(CLAY_ID("PlayerDebugBitrateGraph"),
        {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
                               .height = CLAY_SIZING_FIXED(bitrate_graph_height)},
-                   .childGap = 1},
-        .backgroundColor = color_evicted,
-        .cornerRadius = CLAY_CORNER_RADIUS(4.0F),
-        .clip = {.horizontal = true, .vertical = true}}) {
+                   .childGap = 1,
+                   .childAlignment = {.x = CLAY_ALIGN_X_RIGHT, .y = CLAY_ALIGN_Y_BOTTOM}},
+        .backgroundColor = {255.0F, 255.0F, 255.0F, 10.0F},
+        .cornerRadius = CLAY_CORNER_RADIUS(2.0F)}) {
     for (std::size_t index = first; index < bitrate_history_.size(); ++index) {
       const BitrateSample& sample = bitrate_history_[index];
-      const float video_height = sample.video_bps > 0.0
-                                     ? std::max(1.0F, bitrate_graph_height *
-                                                          static_cast<float>(sample.video_bps /
-                                                                             peak_bps))
-                                     : 0.0F;
-      const float audio_height = sample.audio_bps > 0.0
-                                     ? std::max(1.0F, bitrate_graph_height *
-                                                          static_cast<float>(sample.audio_bps /
-                                                                             peak_bps))
-                                     : 0.0F;
+      const float video_height =
+          sample.video_bps > 0.0
+              ? std::max(1.0F,
+                         bitrate_graph_height * static_cast<float>(sample.video_bps / peak_bps))
+              : 0.0F;
+      const float audio_height =
+          sample.audio_bps > 0.0
+              ? std::max(1.0F,
+                         bitrate_graph_height * static_cast<float>(sample.audio_bps / peak_bps))
+              : 0.0F;
       const uint32_t column = static_cast<uint32_t>(index - first);
       CLAY(Clay_GetElementIdWithIndex(CLAY_STRING("PlayerDebugBitrateColumn"), column),
-           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
+           {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(column_width),
                                   .height = CLAY_SIZING_GROW(0.0F)},
                        .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_BOTTOM},
                        .layoutDirection = CLAY_TOP_TO_BOTTOM}}) {
@@ -657,13 +595,13 @@ void PlayerOverlay::bitrate_graph(float width) {
           CLAY(Clay_GetElementIdWithIndex(CLAY_STRING("PlayerDebugVideoBitrate"), column),
                {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
                                       .height = CLAY_SIZING_FIXED(video_height)}},
-                .backgroundColor = color_progress}) {}
+                .backgroundColor = theme::piece_have}) {}
         }
         if (audio_height > 0.0F) {
           CLAY(Clay_GetElementIdWithIndex(CLAY_STRING("PlayerDebugAudioBitrate"), column),
                {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
                                       .height = CLAY_SIZING_FIXED(audio_height)}},
-                .backgroundColor = color_requested}) {}
+                .backgroundColor = theme::signal}) {}
         }
       }
     }
@@ -700,241 +638,185 @@ void PlayerOverlay::update_bitrate_history(const PlaybackSnapshot& snapshot) {
 }
 
 void PlayerOverlay::build(const WindowMetrics& metrics, const PlaybackSnapshot& snapshot,
-                          const TorrentSnapshot& torrent, bool fullscreen,
-                          bool controls_visible) {
+                          const TorrentSnapshot& torrent, bool fullscreen, bool controls_visible) {
   const float width = static_cast<float>(metrics.logical_width);
   if (!controls_visible) {
     close_menus();
   }
   last_duration_ = snapshot.duration;
   last_rendered_cache_size_mib_ = std::max(1, torrent.cache_limit_mib);
-  if (!buffer_input_focused_ &&
-      (buffer_input_text_.empty() || !buffer_menu_open_ ||
-       selected_cache_size_mib_ != last_rendered_cache_size_mib_)) {
+  if (!buffer_input_focused_ && (buffer_input_text_.empty() || !buffer_menu_open_ ||
+                                 selected_cache_size_mib_ != last_rendered_cache_size_mib_)) {
     selected_cache_size_mib_ = last_rendered_cache_size_mib_;
     buffer_input_text_ = std::to_string(selected_cache_size_mib_);
   }
-  const float panel_width = std::clamp(width - 48.0F, 360.0F, 1240.0F);
-  const float progress = snapshot.duration > 0.0
-                             ? static_cast<float>(
-                                   std::clamp(snapshot.time_pos / snapshot.duration, 0.0, 1.0))
-                             : 0.0F;
+  constexpr float side_padding = 24.0F;
+  const float rail_width = std::max(120.0F, width - side_padding * 2.0F);
   const bool torrent_playback = has_torrent_playback_state(torrent);
   const std::string title = playback_title(snapshot, torrent);
-  const std::string time_label =
-      format_time(snapshot.time_pos) + " / " + format_time(snapshot.duration);
-  const std::string tracks = "V " + std::to_string(snapshot.video_tracks) + "  A " +
-                             std::to_string(snapshot.audio_tracks) + "  S " +
-                             std::to_string(snapshot.subtitle_tracks);
   const std::string cache_usage =
       torrent.cache_bytes_limit > 0
-          ? format_bytes(torrent.cache_bytes_used) + " / " + format_bytes(torrent.cache_bytes_limit)
+          ? format_size(torrent.cache_bytes_used) + " of " + format_size(torrent.cache_bytes_limit)
           : std::to_string(torrent.cache_limit_mib) + " MiB";
-  const std::string buffer_label = "Buffer " + std::to_string(torrent.cache_limit_mib) + " MiB";
-  const std::string buffer_status =
-      torrent_playback && !torrent.buffer_status.empty() ? torrent.buffer_status : cache_usage;
   const std::string audio_label =
-      snapshot.audio_tracks > 0
-          ? "Audio " + std::to_string(std::max(0, snapshot.active_audio_index) + 1) + "/" +
+      snapshot.audio_tracks > 1
+          ? "Audio " + std::to_string(std::max(0, snapshot.active_audio_index) + 1) + " of " +
                 std::to_string(snapshot.audio_tracks)
-          : "Audio -";
-  const std::string status = snapshot.status.empty() ? "Ready" : snapshot.status;
-  const std::string volume =
-      std::to_string(static_cast<int>(std::lround(std::clamp(snapshot.volume, 0.0, 100.0)))) + "%";
-  const float volume_progress =
-      static_cast<float>(std::clamp(snapshot.volume / 100.0, 0.0, 1.0));
+          : "Audio";
+  const int volume_percent = static_cast<int>(std::lround(std::clamp(snapshot.volume, 0.0, 100.0)));
+  const float volume_progress = static_cast<float>(std::clamp(snapshot.volume / 100.0, 0.0, 1.0));
   if (snapshot.audio_track_list.empty()) {
     audio_menu_open_ = false;
   }
   const bool show_audio_menu = audio_menu_open_ && !snapshot.audio_track_list.empty();
   const bool show_buffer_menu = buffer_menu_open_ && controls_visible;
-  const float debug_overlay_width = std::max(220.0F, std::min(520.0F, width - 36.0F));
+  const float debug_overlay_width = std::max(240.0F, std::min(460.0F, width - 32.0F));
+
+  std::string stream_line;
+  Clay_Color stream_color = theme::ash;
+  if (torrent_playback) {
+    stream_line = std::to_string(torrent.peers) + (torrent.peers == 1 ? " peer" : " peers") + ", " +
+                  cache_usage + " buffered";
+    stream_color =
+        torrent.stalled ? theme::fault : (torrent.buffering ? theme::signal : theme::ash);
+  }
 
   CLAY(root_id_,
        {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F), .height = CLAY_SIZING_GROW(0.0F)},
                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_BOTTOM}},
-        .backgroundColor = {0.0F, 0.0F, 0.0F, 0.0F}}) {
+        .backgroundColor = theme::clear}) {
     status_overlay(snapshot, torrent);
     if (debug_overlay_enabled_) {
       debug_overlay(snapshot, torrent, debug_overlay_width);
     }
     if (controls_visible) {
       CLAY(control_panel_id_,
-           {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(panel_width),
-                                  .height = CLAY_SIZING_FIT(0.0F)},
-                       .padding = {18, 18, 14, 14},
-                       .childGap = 10,
+           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F), .height = CLAY_SIZING_FIT(0.0F)},
+                       .padding = {static_cast<uint16_t>(side_padding),
+                                   static_cast<uint16_t>(side_padding), 14, 12},
+                       .childGap = 6,
                        .layoutDirection = CLAY_TOP_TO_BOTTOM},
-            .backgroundColor = color_panel,
-            .cornerRadius = CLAY_CORNER_RADIUS(8.0F)}) {
-      CLAY(CLAY_ID("PlayerInfoRow"),
-           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                  .height = CLAY_SIZING_FIT(0.0F)},
-                       .childGap = 16,
-                       .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
-        text(retain_frame_text(title), 14, color_text, CLAY_TEXT_WRAP_NONE);
-        text(retain_frame_text(status), 12, color_muted, CLAY_TEXT_WRAP_NONE);
-        text(retain_frame_text(tracks), 12, color_muted, CLAY_TEXT_WRAP_NONE);
-      }
-
-      CLAY(timeline_id_,
-           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                  .height = CLAY_SIZING_FIXED(10.0F)}},
-            .backgroundColor = color_rail,
-            .cornerRadius = CLAY_CORNER_RADIUS(5.0F)}) {
-        CLAY(CLAY_ID("PlayerProgress"),
-             {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(
-                                        std::max(4.0F, (panel_width - 36.0F) *
-                                                           static_cast<float>(progress))),
-                                    .height = CLAY_SIZING_GROW(0.0F)}},
-              .backgroundColor = color_progress,
-              .cornerRadius = CLAY_CORNER_RADIUS(5.0F)}) {}
-      }
-
-      piece_rail(torrent, panel_width - 36.0F);
-
-      CLAY(CLAY_ID("PlayerBufferStatusRow"),
-           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                  .height = CLAY_SIZING_FIT(0.0F)},
-                       .childGap = 14,
-                       .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
-        text(retain_frame_text(buffer_status), 11,
-             torrent.stalled ? color_failed : (torrent.buffering ? color_requested : color_muted),
-             CLAY_TEXT_WRAP_NONE);
-        text(retain_frame_text(cache_usage), 11, color_muted, CLAY_TEXT_WRAP_NONE);
-      }
-
-      CLAY(CLAY_ID("PlayerControlsRow"),
-           {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                  .height = CLAY_SIZING_FIT(0.0F)},
-                       .childGap = 8,
-                       .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
-        icon_button(play_id_, snapshot.paused || snapshot.eof_reached ? Icon::play : Icon::pause,
-                    true);
-        icon_button(seek_back_id_, Icon::rewind);
-        icon_button(seek_forward_id_, Icon::forward);
-        text(retain_frame_text(time_label), 12, color_muted, CLAY_TEXT_WRAP_NONE);
-        CLAY(CLAY_ID("PlayerSpacer"),
-             {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
-                                    .height = CLAY_SIZING_FIXED(1.0F)}}}) {}
-        icon(Icon::volume, 18.0F);
-        CLAY(volume_bar_id_,
-             {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(volume_bar_width),
-                                    .height = CLAY_SIZING_FIXED(10.0F)}},
-              .backgroundColor = color_rail,
-              .cornerRadius = CLAY_CORNER_RADIUS(5.0F)}) {
-          CLAY(CLAY_ID("PlayerVolumeProgress"),
-               {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(
-                                          std::max(4.0F, volume_bar_width * volume_progress)),
-                                      .height = CLAY_SIZING_GROW(0.0F)}},
-                .backgroundColor = color_progress,
-                .cornerRadius = CLAY_CORNER_RADIUS(5.0F)}) {}
-        }
-        text(retain_frame_text(volume), 12, color_muted, CLAY_TEXT_WRAP_NONE);
-        CLAY(audio_button_id_,
-             {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
-                                    .height = CLAY_SIZING_FIT(0.0F)},
-                         .padding = {10, 10, 8, 8},
-                         .childGap = 8,
-                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-              .backgroundColor = show_audio_menu ? color_button_emphasis : color_button,
-              .cornerRadius = CLAY_CORNER_RADIUS(6.0F)}) {
-          icon(Icon::audio, 18.0F);
-          text(retain_frame_text(audio_label), 12, color_text, CLAY_TEXT_WRAP_NONE);
-        }
-        CLAY(buffer_button_id_,
-             {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
-                                    .height = CLAY_SIZING_FIT(0.0F)},
-                         .padding = {10, 10, 8, 8},
-                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-              .backgroundColor = show_buffer_menu ? color_button_emphasis : color_button,
-              .cornerRadius = CLAY_CORNER_RADIUS(6.0F)}) {
-          text(retain_frame_text(buffer_label), 12, color_text, CLAY_TEXT_WRAP_NONE);
-        }
-        CLAY(debug_button_id_,
-             {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
-                                    .height = CLAY_SIZING_FIT(0.0F)},
-                         .padding = {10, 10, 8, 8},
-                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-              .backgroundColor = debug_overlay_enabled_ ? color_button_emphasis : color_button,
-              .cornerRadius = CLAY_CORNER_RADIUS(6.0F)}) {
-          text("DBG", 12, color_text, CLAY_TEXT_WRAP_NONE);
-        }
-        icon_button(fullscreen_id_, fullscreen ? Icon::window : Icon::fullscreen);
-        icon_button(stop_id_, Icon::close);
-      }
-
-      if (show_audio_menu) {
-        CLAY(audio_menu_id_,
-             {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F, 420.0F),
-                                    .height = CLAY_SIZING_FIT(0.0F)},
-                         .padding = {6, 6, 6, 6},
-                         .childGap = 4,
-                         .layoutDirection = CLAY_TOP_TO_BOTTOM},
-              .backgroundColor = color_menu,
-              .cornerRadius = CLAY_CORNER_RADIUS(7.0F),
-              .floating = {.offset = {0.0F, -8.0F},
-                           .parentId = audio_button_id_.id,
-                           .zIndex = 20,
-                           .attachPoints = {.element = CLAY_ATTACH_POINT_RIGHT_BOTTOM,
-                                            .parent = CLAY_ATTACH_POINT_RIGHT_TOP},
-                           .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_CAPTURE,
-                           .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
-                           .clipTo = CLAY_CLIP_TO_NONE}}) {
-          for (std::size_t index = 0; index < snapshot.audio_track_list.size(); ++index) {
-            const Clay_ElementId row_id =
-                Clay_GetElementIdWithIndex(CLAY_STRING("PlayerAudioTrackRow"),
-                                           static_cast<uint32_t>(index));
-            audio_track_row_ids_.push_back(row_id);
-            const bool active = static_cast<int>(index) == snapshot.active_audio_index;
-            audio_track_row(row_id, retain_frame_text(snapshot.audio_track_list[index].label),
-                            active);
+            .backgroundColor = theme::scrim}) {
+        CLAY(CLAY_ID("PlayerInfoRow"), {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F)},
+                                                   .childGap = 16,
+                                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+          ui_.text(ui_.keep(truncate_middle(
+                       title, ui_.chars_for_width(rail_width * 0.6F, theme::size_lead))),
+                   theme::size_lead, theme::lamp, theme::font_semibold);
+          ui_.spacer();
+          if (!stream_line.empty()) {
+            ui_.text(ui_.keep(stream_line), theme::size_caption, stream_color);
           }
         }
-      }
 
-      if (show_buffer_menu) {
-        CLAY(buffer_menu_id_,
-             {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F, 520.0F),
-                                    .height = CLAY_SIZING_FIT(0.0F)},
-                         .padding = {12, 12, 12, 12},
-                         .childGap = 10,
-                         .layoutDirection = CLAY_TOP_TO_BOTTOM},
-              .backgroundColor = color_menu,
-              .cornerRadius = CLAY_CORNER_RADIUS(7.0F),
-              .floating = {.offset = {0.0F, -8.0F},
-                           .parentId = buffer_button_id_.id,
-                           .zIndex = 20,
-                           .attachPoints = {.element = CLAY_ATTACH_POINT_RIGHT_BOTTOM,
-                                            .parent = CLAY_ATTACH_POINT_RIGHT_TOP},
-                           .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_CAPTURE,
-                           .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
-                           .clipTo = CLAY_CLIP_TO_NONE}}) {
-          text(retain_frame_text(cache_usage), 12, color_text, CLAY_TEXT_WRAP_NONE);
-          text(retain_frame_text(buffer_status), 11, color_muted, CLAY_TEXT_WRAP_NONE);
-          CLAY(CLAY_ID("PlayerCacheInputRow"),
-               {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
+        timeline(snapshot, torrent, rail_width);
+
+        CLAY(CLAY_ID("PlayerControlsRow"),
+             {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F)},
+                         .childGap = 2,
+                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+          control_button(play_id_,
+                         snapshot.paused || snapshot.eof_reached ? Icon::play : Icon::pause, 22.0F);
+          control_button(seek_back_id_, Icon::rewind);
+          control_button(seek_forward_id_, Icon::forward);
+          ui_.gap(10.0F, 1.0F);
+          ui_.text(ui_.keep(format_clock(snapshot.time_pos)), theme::size_body, theme::lamp);
+          ui_.text(ui_.keep("  /  " + format_clock(snapshot.duration)), theme::size_body,
+                   theme::smoke);
+          ui_.spacer();
+          ui_.icon("icons/volume.svg", 18.0F);
+          ui_.gap(8.0F, 1.0F);
+          CLAY(volume_bar_id_, {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(volume_bar_width),
+                                                      .height = CLAY_SIZING_FIXED(control_size)},
+                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+            CLAY(CLAY_ID("PlayerVolumeRail"),
+                 {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F),
+                                        .height = CLAY_SIZING_FIXED(4.0F)}},
+                  .backgroundColor = {255.0F, 255.0F, 255.0F, 46.0F},
+                  .cornerRadius = CLAY_CORNER_RADIUS(2.0F)}) {
+              CLAY(CLAY_ID("PlayerVolumeProgress"),
+                   {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(
+                                              std::max(4.0F, volume_bar_width * volume_progress)),
+                                          .height = CLAY_SIZING_GROW(0.0F)}},
+                    .backgroundColor = theme::lamp,
+                    .cornerRadius = CLAY_CORNER_RADIUS(2.0F)}) {}
+            }
+          }
+          CLAY_AUTO_ID({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(40.0F)},
+                                   .childAlignment = {.x = CLAY_ALIGN_X_RIGHT}}}) {
+            ui_.text(ui_.keep(std::to_string(volume_percent)), theme::size_caption, theme::ash);
+          }
+          ui_.gap(14.0F, 1.0F);
+          text_button(audio_button_id_, ui_.keep(audio_label), show_audio_menu);
+          if (torrent_playback) {
+            text_button(buffer_button_id_, "Buffer", show_buffer_menu);
+          }
+          text_button(debug_button_id_, "Stats", debug_overlay_enabled_);
+          ui_.gap(6.0F, 1.0F);
+          control_button(fullscreen_id_, fullscreen ? Icon::window : Icon::fullscreen, 18.0F);
+          control_button(stop_id_, Icon::close, 18.0F);
+        }
+
+        if (show_audio_menu) {
+          CLAY(audio_menu_id_,
+               {.layout = {.sizing = {.width = CLAY_SIZING_FIT(220.0F, 420.0F),
                                       .height = CLAY_SIZING_FIT(0.0F)},
-                           .childGap = 14,
-                           .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}}}) {
-            cache_size_input(retain_frame_text(buffer_input_text_), buffer_input_focused_);
-            text("mib", 16, color_muted, CLAY_TEXT_WRAP_NONE);
-            CLAY(buffer_apply_id_,
-                 {.layout = {.sizing = {.width = CLAY_SIZING_FIT(0.0F),
-                                        .height = CLAY_SIZING_FIT(0.0F)},
-                             .padding = {12, 12, 5, 5},
-                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER,
-                                                .y = CLAY_ALIGN_Y_CENTER}},
-                  .backgroundColor = color_button_emphasis,
-                  .cornerRadius = CLAY_CORNER_RADIUS(6.0F)}) {
-              text("Set", 12, color_text, CLAY_TEXT_WRAP_NONE);
+                           .padding = {4, 4, 4, 4},
+                           .childGap = 2,
+                           .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                .backgroundColor = theme::lifted,
+                .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_menu),
+                .floating = {.offset = {0.0F, -8.0F},
+                             .parentId = audio_button_id_.id,
+                             .zIndex = 20,
+                             .attachPoints = {.element = CLAY_ATTACH_POINT_RIGHT_BOTTOM,
+                                              .parent = CLAY_ATTACH_POINT_RIGHT_TOP},
+                             .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_CAPTURE,
+                             .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+                             .clipTo = CLAY_CLIP_TO_NONE}}) {
+            for (std::size_t index = 0; index < snapshot.audio_track_list.size(); ++index) {
+              const Clay_ElementId row_id = Clay_GetElementIdWithIndex(
+                  CLAY_STRING("PlayerAudioTrackRow"), static_cast<uint32_t>(index));
+              audio_track_row_ids_.push_back(row_id);
+              const bool active = static_cast<int>(index) == snapshot.active_audio_index;
+              audio_track_row(row_id, ui_.keep(snapshot.audio_track_list[index].label), active);
+            }
+          }
+        }
+
+        if (show_buffer_menu) {
+          CLAY(buffer_menu_id_,
+               {.layout = {.sizing = {.width = CLAY_SIZING_FIXED(300.0F),
+                                      .height = CLAY_SIZING_FIT(0.0F)},
+                           .padding = {16, 16, 14, 16},
+                           .childGap = 6,
+                           .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                .backgroundColor = theme::lifted,
+                .cornerRadius = CLAY_CORNER_RADIUS(theme::radius_menu),
+                .floating = {.offset = {0.0F, -8.0F},
+                             .parentId = buffer_button_id_.id,
+                             .zIndex = 20,
+                             .attachPoints = {.element = CLAY_ATTACH_POINT_RIGHT_BOTTOM,
+                                              .parent = CLAY_ATTACH_POINT_RIGHT_TOP},
+                             .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_CAPTURE,
+                             .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+                             .clipTo = CLAY_CLIP_TO_NONE}}) {
+            ui_.text("Stream buffer", theme::size_body, theme::lamp, theme::font_semibold);
+            ui_.text(ui_.keep("In memory: " + cache_usage), theme::size_caption, theme::ash);
+            ui_.gap(1.0F, 6.0F);
+            CLAY(CLAY_ID("PlayerCacheInputRow"),
+                 {.layout = {.sizing = {.width = CLAY_SIZING_GROW(0.0F)},
+                             .childGap = 8,
+                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+              ui_.field(buffer_input_id_, ui_.keep(buffer_input_text_), {}, "MiB",
+                        buffer_input_focused_, 0.0F);
+              ui_.button(buffer_apply_id_, "Apply", ButtonKind::primary);
             }
           }
         }
       }
     }
   }
-}
 }
 
 PlayerOverlayAction PlayerOverlay::hit_test_click() {
@@ -1265,13 +1147,9 @@ void PlayerOverlay::return_to_file_browser_after_eof() {
   app_.update_window_title();
 }
 
-bool PlayerOverlay::controls_visible() const {
-  return controls_visible_;
-}
+bool PlayerOverlay::controls_visible() const { return controls_visible_; }
 
-bool PlayerOverlay::has_player_file() const {
-  return player_ != nullptr && player_->has_file();
-}
+bool PlayerOverlay::has_player_file() const { return player_ != nullptr && player_->has_file(); }
 
 double PlayerOverlay::volume_from_pointer(float pointer_x) const {
   const Clay_ElementData data = Clay_GetElementData(volume_bar_id_);
@@ -1279,8 +1157,7 @@ double PlayerOverlay::volume_from_pointer(float pointer_x) const {
     return 100.0;
   }
 
-  const float local_x =
-      std::clamp(pointer_x - data.boundingBox.x, 0.0F, data.boundingBox.width);
+  const float local_x = std::clamp(pointer_x - data.boundingBox.x, 0.0F, data.boundingBox.width);
   return static_cast<double>(local_x / data.boundingBox.width) * 100.0;
 }
 
@@ -1290,8 +1167,7 @@ double PlayerOverlay::seek_seconds_from_pointer(float pointer_x) const {
     return 0.0;
   }
 
-  const float local_x =
-      std::clamp(pointer_x - data.boundingBox.x, 0.0F, data.boundingBox.width);
+  const float local_x = std::clamp(pointer_x - data.boundingBox.x, 0.0F, data.boundingBox.width);
   return std::clamp(static_cast<double>(local_x / data.boundingBox.width) * last_duration_, 0.0,
                     last_duration_);
 }
@@ -1343,8 +1219,6 @@ void PlayerOverlay::commit_cache_size_text() {
   buffer_input_text_ = std::to_string(selected_cache_size_mib_);
   buffer_input_focused_ = false;
 }
-
-void PlayerOverlay::set_font_size(int font_size) { font_size_ = std::clamp(font_size, 9, 24); }
 
 void PlayerOverlay::close_audio_menu() { audio_menu_open_ = false; }
 

@@ -21,6 +21,7 @@
 #include <SDL3/SDL.h>
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -94,6 +95,30 @@ private:
   void draw();
   void log_startup() const;
 
+  // UI capture (developer tool): when TORRVIEW_UI_CAPTURE names a directory, the app runs hidden,
+  // walks a scripted tour of every page, writes one BMP per state, and quits. See docs/build.md.
+  struct DevCaptureStep {
+    std::string name;
+    std::function<void()> action;
+    float wait_seconds = 0.6F;
+    std::function<bool()> ready;
+  };
+  void dev_capture_setup();
+  void dev_capture_tick();
+  void dev_capture_write(const std::string& name);
+  void dev_move(float x, float y);
+  void dev_click(float x, float y);
+  void dev_click_id(const char* id, uint32_t index = UINT32_MAX);
+  void dev_hover_id(const char* id, uint32_t index = UINT32_MAX);
+  void dev_wheel(float x, float y, float dy);
+  void dev_key(SDL_Keycode key, SDL_Keymod mod = SDL_KMOD_NONE);
+  void dev_text(const char* text);
+  std::string dev_capture_dir_;
+  std::vector<DevCaptureStep> dev_steps_;
+  std::size_t dev_step_ = 0;
+  bool dev_step_ran_ = false;
+  Clock::time_point dev_step_started_{};
+
   void update_library();
   LibraryEntry* active_entry();
   std::unique_ptr<Library> library_;
@@ -110,7 +135,7 @@ private:
   float current_delta_time_ = 0.0F;
   SDL_Window* window_ = nullptr;
   SDL_GLContext context_ = nullptr;
-  const char* font_name_ = "TorrviewNotoSans";
+  ui::FontNames font_names_ = {"TorrviewGolos", "TorrviewGolosSemiBold"};
   BasicGlApi basic_gl_;
   WindowMetrics metrics_;
   PointerState pointer_;

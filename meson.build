@@ -466,10 +466,12 @@ clay_dep = declare_dependency(
 )
 
 resource_files = files(
-  'assets/fonts/NotoSans-Regular.ttf',
+  'assets/fonts/GolosText-Regular.ttf',
+  'assets/fonts/GolosText-SemiBold.ttf',
   'assets/icons/audio-next.svg',
   'assets/icons/audio-prev.svg',
   'assets/icons/audio.svg',
+  'assets/icons/back.svg',
   'assets/icons/close.svg',
   'assets/icons/forward.svg',
   'assets/icons/gear.svg',
