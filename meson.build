@@ -221,121 +221,117 @@ if static_build
   )
 endif
 
+# libmpv is mandatory: Torrview is a video player and has no playback path without it.
 mpv_dep = dependency('', required: false)
-mpv_requested = static_build or get_option('mpv').allowed()
-mpv_required = get_option('mpv')
-if static_build
-  mpv_required = true
-endif
-
-if mpv_requested
-  if get_option('system_mpv') and not static_build
-    mpv_dep = dependency('mpv', static: static_linkage, required: false)
-  endif
+if get_option('system_mpv') and not static_build
+  mpv_dep = dependency('mpv', method: 'pkg-config', required: false)
   if not mpv_dep.found()
-    mpv_options = [
-      'default_library=static',
-      'b_staticpic=false',
-      'optimization=2',
-      'b_ndebug=true',
-      'auto_features=disabled',
-      'libmpv=true',
-      'cplayer=false',
-      'tests=false',
-      'fuzzers=false',
-      'build-date=false',
-      'html-build=disabled',
-      'manpage-build=disabled',
-      'pdf-build=disabled',
-      'caca=disabled',
-      'cdda=disabled',
-      'cplugins=disabled',
-      'dvbin=disabled',
-      'dvdnav=disabled',
-      'jpeg=disabled',
-      'lcms2=disabled',
-      'libarchive=disabled',
-      'lua=disabled',
-      'javascript=disabled',
-      'libbluray=disabled',
-      'libavdevice=disabled',
-      'rubberband=disabled',
-      'shaderc=disabled',
-      'spirv-cross=disabled',
-      'uchardet=disabled',
-      'vapoursynth=disabled',
-      'zimg=disabled',
-      'alsa=disabled',
-      'audiounit=disabled',
-      'avfoundation=disabled',
-      'coreaudio=disabled',
-      'jack=disabled',
-      'openal=disabled',
-      'audiotrack=disabled',
-      'aaudio=disabled',
-      'opensles=disabled',
-      'oss-audio=disabled',
-      'pipewire=disabled',
-      'pulse=disabled',
-      'sdl2-audio=disabled',
-      'sndio=disabled',
-      'wasapi=disabled',
-      'cocoa=disabled',
-      'd3d11=disabled',
-      'direct3d=disabled',
-      'dmabuf-wayland=disabled',
-      'drm=disabled',
-      'egl=disabled',
-      'egl-angle=disabled',
-      'egl-angle-lib=disabled',
-      'egl-angle-win32=disabled',
-      'gbm=disabled',
-      'gl=enabled',
-      'gl-cocoa=disabled',
-      'gl-dxinterop=disabled',
-      'gl-win32=disabled',
-      'gl-x11=disabled',
-      'plain-gl=enabled',
-      'sdl2-video=disabled',
-      'sixel=disabled',
-      'vaapi=disabled',
-      'vulkan=disabled',
-      'wayland=disabled',
-      'x11=disabled',
-      'xv=disabled',
-      'android-media-ndk=disabled',
-      'cuda-hwaccel=disabled',
-      'cuda-interop=disabled',
-      'd3d-hwaccel=disabled',
-      'd3d9-hwaccel=disabled',
-      'gl-dxinterop-d3d9=disabled',
-      'videotoolbox-gl=disabled',
-      'videotoolbox-pl=disabled',
-      'win32-smtc=disabled',
-    ]
-    if host_platform == 'windows'
-      mpv_options += [
-        'wasapi=enabled',
-        'd3d-hwaccel=enabled',
-        'd3d9-hwaccel=enabled',
-      ]
-    elif host_platform == 'linux'
-      mpv_options += ['alsa=enabled']
-    endif
-
-    if static_build and host_platform == 'windows'
-      mpv_options += ['win32-threads=enabled']
-    endif
-
-    mpv_proj = subproject(
+    # Some distributions (notably MSYS2) ship an mpv.pc whose Requires.private entries cannot be
+    # resolved, although the shared libmpv and its headers are installed. Link it directly.
+    mpv_dep = cpp.find_library(
       'mpv',
-      default_options: mpv_options,
-      required: mpv_required,
+      has_headers: ['mpv/client.h', 'mpv/render_gl.h', 'mpv/stream_cb.h'],
+      required: false,
     )
-    if mpv_proj.found()
-      mpv_dep = mpv_proj.get_variable('libmpv_dep')
-    endif
   endif
+endif
+if not mpv_dep.found()
+  mpv_options = [
+    'default_library=static',
+    'b_staticpic=false',
+    'optimization=2',
+    'b_ndebug=true',
+    'auto_features=disabled',
+    'libmpv=true',
+    'cplayer=false',
+    'tests=false',
+    'fuzzers=false',
+    'build-date=false',
+    'html-build=disabled',
+    'manpage-build=disabled',
+    'pdf-build=disabled',
+    'caca=disabled',
+    'cdda=disabled',
+    'cplugins=disabled',
+    'dvbin=disabled',
+    'dvdnav=disabled',
+    'jpeg=disabled',
+    'lcms2=disabled',
+    'libarchive=disabled',
+    'lua=disabled',
+    'javascript=disabled',
+    'libbluray=disabled',
+    'libavdevice=disabled',
+    'rubberband=disabled',
+    'shaderc=disabled',
+    'spirv-cross=disabled',
+    'uchardet=disabled',
+    'vapoursynth=disabled',
+    'zimg=disabled',
+    'alsa=disabled',
+    'audiounit=disabled',
+    'avfoundation=disabled',
+    'coreaudio=disabled',
+    'jack=disabled',
+    'openal=disabled',
+    'audiotrack=disabled',
+    'aaudio=disabled',
+    'opensles=disabled',
+    'oss-audio=disabled',
+    'pipewire=disabled',
+    'pulse=disabled',
+    'sdl2-audio=disabled',
+    'sndio=disabled',
+    'wasapi=disabled',
+    'cocoa=disabled',
+    'd3d11=disabled',
+    'direct3d=disabled',
+    'dmabuf-wayland=disabled',
+    'drm=disabled',
+    'egl=disabled',
+    'egl-angle=disabled',
+    'egl-angle-lib=disabled',
+    'egl-angle-win32=disabled',
+    'gbm=disabled',
+    'gl=enabled',
+    'gl-cocoa=disabled',
+    'gl-dxinterop=disabled',
+    'gl-win32=disabled',
+    'gl-x11=disabled',
+    'plain-gl=enabled',
+    'sdl2-video=disabled',
+    'sixel=disabled',
+    'vaapi=disabled',
+    'vulkan=disabled',
+    'wayland=disabled',
+    'x11=disabled',
+    'xv=disabled',
+    'android-media-ndk=disabled',
+    'cuda-hwaccel=disabled',
+    'cuda-interop=disabled',
+    'd3d-hwaccel=disabled',
+    'd3d9-hwaccel=disabled',
+    'gl-dxinterop-d3d9=disabled',
+    'videotoolbox-gl=disabled',
+    'videotoolbox-pl=disabled',
+    'win32-smtc=disabled',
+  ]
+  if host_platform == 'windows'
+    mpv_options += [
+      'wasapi=enabled',
+      'd3d-hwaccel=enabled',
+      'd3d9-hwaccel=enabled',
+    ]
+  elif host_platform == 'linux'
+    mpv_options += ['alsa=enabled']
+  endif
+
+  if static_build and host_platform == 'windows'
+    mpv_options += ['win32-threads=enabled']
+  endif
+
+  mpv_proj = subproject('mpv', default_options: mpv_options, required: true)
+  mpv_dep = mpv_proj.get_variable('libmpv_dep')
 endif
 
 libtorrent_dep = dependency('', required: false)
@@ -493,7 +489,8 @@ torrview_deps = [
   clay_dep,
 ]
 
-foreach dep : [mpv_dep, libtorrent_dep, freetype_dep, fontconfig_dep, thorvg_dep, tracy_dep]
+torrview_deps += mpv_dep
+foreach dep : [libtorrent_dep, freetype_dep, fontconfig_dep, thorvg_dep, tracy_dep]
   if dep.found()
     torrview_deps += dep
   endif
@@ -501,7 +498,6 @@ endforeach
 
 config = configuration_data()
 config.set_quoted('TORRVIEW_VERSION', meson.project_version())
-config.set('TORRVIEW_HAVE_MPV', mpv_dep.found())
 config.set('TORRVIEW_HAVE_LIBTORRENT', libtorrent_dep.found())
 config.set('TORRVIEW_HAVE_FREETYPE', freetype_dep.found())
 config.set('TORRVIEW_HAVE_FONTCONFIG', fontconfig_dep.found())
@@ -517,12 +513,10 @@ configure_file(
 
 config_inc = include_directories('.')
 
-core_deps = []
-foreach dep : [mpv_dep, libtorrent_dep]
-  if dep.found()
-    core_deps += dep
-  endif
-endforeach
+core_deps = [mpv_dep]
+if libtorrent_dep.found()
+  core_deps += libtorrent_dep
+endif
 subdir('src/core')
 subdir('src')
 subdir('tests')
@@ -532,7 +526,7 @@ summary({
   'SDL3': sdl3_dep.found(),
   'OpenGL': opengl_dep.found(),
   'Clay': true,
-  'libmpv': mpv_dep.found(),
+  'libmpv': true,
   'libtorrent-rasterbar': libtorrent_dep.found(),
   'FreeType': freetype_dep.found(),
   'Fontconfig': fontconfig_dep.found(),

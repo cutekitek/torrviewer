@@ -1,7 +1,11 @@
 # Windows Development Build
 
 Use an MSYS2 MinGW shell, preferably UCRT64, with Meson, Ninja, a C++ compiler,
-pkg-config, SDL3, and the optional application dependencies installed.
+pkg-config, SDL3, libmpv (`mingw-w64-ucrt-x86_64-mpv`, required), and the
+optional application dependencies installed. MSYS2's `mpv.pc` lists private
+dependencies that pkg-config cannot always resolve (for example the LuaJIT
+`lua5.1` version); Meson then links the installed `libmpv` and its headers
+directly.
 Production uses [MSYS2 CLANG64](windows-static-build.md); keep its `build-prod`
 directory separate from a UCRT64 development build.
 
@@ -18,7 +22,6 @@ meson setup build-dev \
   -Db_staticpic=true \
   -Db_ndebug=false \
   -Dbuild_target=dev \
-  -Dmpv=auto \
   -Dsystem_mpv=true \
   -Dlibtorrent=auto \
   -Dsystem_libtorrent=true \

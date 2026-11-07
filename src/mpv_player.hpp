@@ -93,7 +93,6 @@ public:
   MpvPlayer& operator=(const MpvPlayer&) = delete;
   ~MpvPlayer();
 
-  bool available() const;
   void set_torrent_stream_provider(TorrentStreamProvider* provider);
   void initialize();
   void load_file(const std::string& path, bool autoplay = true, double start_seconds = 0.0);

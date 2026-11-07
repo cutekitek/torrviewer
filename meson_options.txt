@@ -1,4 +1,3 @@
-option('mpv', type: 'feature', value: 'enabled', description: 'Discover libmpv or build it from the mpv Meson subproject fallback')
 option('system_mpv', type: 'boolean', value: false, description: 'Prefer an installed system libmpv before the mpv subproject fallback')
 option('libtorrent', type: 'feature', value: 'enabled', description: 'Discover libtorrent-rasterbar or build it from the Meson/CMake subproject fallback')
 option('system_libtorrent', type: 'boolean', value: false, description: 'Prefer an installed system libtorrent-rasterbar before the subproject fallback')

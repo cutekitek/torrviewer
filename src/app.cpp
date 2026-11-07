@@ -61,12 +61,6 @@ void SDLCALL open_file_dialog_callback(void*, const char* const* filelist, int) 
   g_dialog_results.paths.emplace_back(*filelist);
 }
 
-#if defined(TORRVIEW_HAVE_MPV)
-constexpr bool has_mpv = true;
-#else
-constexpr bool has_mpv = false;
-#endif
-
 #if defined(TORRVIEW_HAVE_LIBTORRENT)
 constexpr bool has_libtorrent = true;
 #else
@@ -187,9 +181,7 @@ void Application::initialize() {
   player_ = std::make_unique<MpvPlayer>();
   player_->set_torrent_stream_provider(&torrent_service_);
   apply_settings();
-  if (player_->available()) {
-    player_->initialize();
-  }
+  player_->initialize();
 
   SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, true);
   SDL_SetEventEnabled(SDL_EVENT_DROP_TEXT, true);
@@ -497,9 +489,8 @@ void Application::accept_input(ParsedInput input) {
   last_input_ = std::move(input);
   if (last_input_->kind == InputKind::local_media_file) {
     torrent_service_.reset();
-    if (player_ == nullptr || !player_->available()) {
-      TORRVIEW_LOG_ERROR(
-          "Local playback requires libmpv, but this build was configured without it");
+    if (player_ == nullptr) {
+      TORRVIEW_LOG_ERROR("Local playback failed: the player is not initialized");
     } else {
       try {
         player_->load_file(last_input_->value);
@@ -695,8 +686,8 @@ VideoProgress Application::file_progress(int index) const {
 void Application::play_torrent_file(int index) {
   save_progress();
   resume_pending_ = false;
-  if (!player_ || !player_->available()) {
-    library_status_ = "Playback requires libmpv";
+  if (!player_) {
+    library_status_ = "Player is not initialized";
     return;
   }
   const auto snapshot = browsing_snapshot();
@@ -1062,10 +1053,9 @@ void Application::dev_text(const char* text) {
 
 void Application::log_startup() const {
   TORRVIEW_LOG_INFO("Torrview " << TORRVIEW_VERSION);
-  TORRVIEW_LOG_INFO("Dependencies: SDL3=yes OpenGL=yes Clay=yes"
-                    << " libmpv=" << available(has_mpv) << " libtorrent="
-                    << available(has_libtorrent) << " freetype=" << available(has_freetype)
-                    << " fontconfig=" << available(has_fontconfig)
+  TORRVIEW_LOG_INFO("Dependencies: SDL3=yes OpenGL=yes Clay=yes libmpv=yes"
+                    << " libtorrent=" << available(has_libtorrent) << " freetype="
+                    << available(has_freetype) << " fontconfig=" << available(has_fontconfig)
                     << " thorvg=" << available(has_thorvg) << " tracy=" << available(has_tracy));
   TORRVIEW_LOG_INFO("Input shell: drop .torrent files, local video files, or magnet text; press "
                     "Ctrl+O to open a source file, Ctrl+V to paste a magnet link");

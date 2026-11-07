@@ -1,6 +1,5 @@
 #include "mpv_player.hpp"
 
-#include "config.hpp"
 #include "logger.hpp"
 #include "mpv_presentation.hpp"
 
@@ -10,15 +9,12 @@
 #include <stdexcept>
 #include <string_view>
 
-#if defined(TORRVIEW_HAVE_MPV)
 #include <mpv/client.h>
 #include <mpv/stream_cb.h>
-#endif
 
 namespace torrview {
 namespace {
 
-#if defined(TORRVIEW_HAVE_MPV)
 std::int64_t torrent_stream_read(void* cookie, char* buffer, std::uint64_t bytes) {
   auto* stream = static_cast<TorrentStreamReader*>(cookie);
   if (stream == nullptr) {
@@ -182,7 +178,6 @@ void observe_optional_property(mpv_handle* handle, const char* name, mpv_format 
                                                                  << mpv_error_string(code) << ')');
   }
 }
-#endif
 
 } // namespace
 
@@ -190,20 +185,10 @@ MpvPlayer::MpvPlayer() : presentation_(make_mpv_presentation()) {}
 
 MpvPlayer::~MpvPlayer() {
   presentation_.reset();
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ != nullptr) {
     mpv_terminate_destroy(handle_);
     handle_ = nullptr;
   }
-#endif
-}
-
-bool MpvPlayer::available() const {
-#if defined(TORRVIEW_HAVE_MPV)
-  return true;
-#else
-  return false;
-#endif
 }
 
 void MpvPlayer::set_torrent_stream_provider(TorrentStreamProvider* provider) {
@@ -212,7 +197,6 @@ void MpvPlayer::set_torrent_stream_provider(TorrentStreamProvider* provider) {
 }
 
 void MpvPlayer::initialize() {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ != nullptr) {
     return;
   }
@@ -256,15 +240,9 @@ void MpvPlayer::initialize() {
   snapshot_.available = true;
   snapshot_.initialized = true;
   snapshot_.status = "Ready";
-#else
-  snapshot_.available = false;
-  snapshot_.initialized = false;
-  snapshot_.status = "This build was configured without libmpv";
-#endif
 }
 
 void MpvPlayer::load_file(const std::string& path, bool autoplay, double start_seconds) {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr) {
     initialize();
   }
@@ -293,16 +271,9 @@ void MpvPlayer::load_file(const std::string& path, bool autoplay, double start_s
   snapshot_.diagnostics = {};
   snapshot_.buffered_ranges.clear();
   snapshot_.status = "Loading";
-#else
-  (void)path;
-  (void)autoplay;
-  (void)start_seconds;
-  throw std::runtime_error("Cannot play local media: this build was configured without libmpv");
-#endif
 }
 
 void MpvPlayer::process_events() {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr) {
     return;
   }
@@ -388,7 +359,6 @@ void MpvPlayer::process_events() {
       break;
     }
   }
-#endif
 }
 
 void MpvPlayer::render(int width, int height) { presentation_->render(width, height); }
@@ -407,7 +377,6 @@ void MpvPlayer::set_subtitle_font_directory(std::string directory) {
 }
 
 void MpvPlayer::select_subtitle_track(int index) {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr || index < -1 ||
       index >= static_cast<int>(snapshot_.subtitle_track_list.size())) {
     return;
@@ -421,13 +390,9 @@ void MpvPlayer::select_subtitle_track(int index) {
   } else {
     snapshot_.active_subtitle_index = index;
   }
-#else
-  (void)index;
-#endif
 }
 
 void MpvPlayer::toggle_pause() {
-#if defined(TORRVIEW_HAVE_MPV)
   if (!snapshot_.loaded) {
     return;
   }
@@ -440,11 +405,9 @@ void MpvPlayer::toggle_pause() {
   }
 
   set_pause(!snapshot_.paused);
-#endif
 }
 
 void MpvPlayer::set_pause(bool pause) {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr) {
     return;
   }
@@ -456,13 +419,9 @@ void MpvPlayer::set_pause(bool pause) {
   } else {
     snapshot_.paused = pause;
   }
-#else
-  (void)pause;
-#endif
 }
 
 void MpvPlayer::seek_relative(double seconds) {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr || !snapshot_.loaded) {
     return;
   }
@@ -471,13 +430,9 @@ void MpvPlayer::seek_relative(double seconds) {
   const char* args[] = {"seek", amount.c_str(), "relative", "exact", nullptr};
   command(args);
   snapshot_.eof_reached = false;
-#else
-  (void)seconds;
-#endif
 }
 
 void MpvPlayer::seek_absolute(double seconds) {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr || !snapshot_.loaded) {
     return;
   }
@@ -486,15 +441,11 @@ void MpvPlayer::seek_absolute(double seconds) {
   const char* args[] = {"seek", target.c_str(), "absolute", "exact", nullptr};
   command(args);
   snapshot_.eof_reached = false;
-#else
-  (void)seconds;
-#endif
 }
 
 void MpvPlayer::adjust_volume(double delta) { set_volume(snapshot_.volume + delta); }
 
 void MpvPlayer::set_volume(double volume) {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr) {
     return;
   }
@@ -506,13 +457,9 @@ void MpvPlayer::set_volume(double volume) {
   } else {
     snapshot_.volume = clamped;
   }
-#else
-  (void)volume;
-#endif
 }
 
 void MpvPlayer::select_audio_track_relative(int direction) {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr || snapshot_.audio_track_list.empty() || direction == 0) {
     return;
   }
@@ -525,13 +472,9 @@ void MpvPlayer::select_audio_track_relative(int direction) {
   }
 
   select_audio_track(static_cast<std::size_t>(next));
-#else
-  (void)direction;
-#endif
 }
 
 void MpvPlayer::select_audio_track(std::size_t index) {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr || index >= snapshot_.audio_track_list.size()) {
     return;
   }
@@ -543,20 +486,15 @@ void MpvPlayer::select_audio_track(std::size_t index) {
   } else {
     snapshot_.active_audio_index = static_cast<int>(index);
   }
-#else
-  (void)index;
-#endif
 }
 
 void MpvPlayer::stop() {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr) {
     return;
   }
 
   const char* args[] = {"stop", nullptr};
   command(args);
-#endif
   snapshot_.loaded = false;
   snapshot_.paused = true;
   snapshot_.eof_reached = false;
@@ -578,7 +516,6 @@ bool MpvPlayer::has_file() const { return snapshot_.loaded || !snapshot_.path.em
 PlaybackSnapshot MpvPlayer::snapshot() const { return snapshot_; }
 
 void MpvPlayer::observe_properties() {
-#if defined(TORRVIEW_HAVE_MPV)
   check_mpv(mpv_observe_property(handle_, 0, "time-pos", MPV_FORMAT_DOUBLE), "observe time-pos");
   check_mpv(mpv_observe_property(handle_, 0, "duration", MPV_FORMAT_DOUBLE), "observe duration");
   check_mpv(mpv_observe_property(handle_, 0, "pause", MPV_FORMAT_FLAG), "observe pause");
@@ -600,11 +537,9 @@ void MpvPlayer::observe_properties() {
   observe_optional_property(handle_, "frame-drop-count", MPV_FORMAT_INT64);
   observe_optional_property(handle_, "decoder-frame-drop-count", MPV_FORMAT_INT64);
   observe_optional_property(handle_, "hwdec-current", MPV_FORMAT_STRING);
-#endif
 }
 
 void MpvPlayer::handle_property(const char* name, void* data, int format) {
-#if defined(TORRVIEW_HAVE_MPV)
   if (name == nullptr) {
     return;
   }
@@ -675,15 +610,9 @@ void MpvPlayer::handle_property(const char* name, void* data, int format) {
     const auto* value = *static_cast<char**>(data);
     snapshot_.diagnostics.hardware_decoder = value != nullptr ? value : "";
   }
-#else
-  (void)name;
-  (void)data;
-  (void)format;
-#endif
 }
 
 void MpvPlayer::update_track_counts(void* node_data) {
-#if defined(TORRVIEW_HAVE_MPV)
   auto* node = static_cast<mpv_node*>(node_data);
   VideoPlaybackMetadata& video = snapshot_.diagnostics.video;
   AudioPlaybackMetadata& audio = snapshot_.diagnostics.audio;
@@ -787,13 +716,9 @@ void MpvPlayer::update_track_counts(void* node_data) {
   if (snapshot_.active_audio_index < 0 && snapshot_.audio_tracks > 0) {
     snapshot_.active_audio_index = 0;
   }
-#else
-  (void)node_data;
-#endif
 }
 
 void MpvPlayer::update_video_params(void* node_data) {
-#if defined(TORRVIEW_HAVE_MPV)
   auto* node = static_cast<mpv_node*>(node_data);
   if (node == nullptr || node->format != MPV_FORMAT_NODE_MAP) {
     return;
@@ -810,13 +735,9 @@ void MpvPlayer::update_video_params(void* node_data) {
   video.hardware_pixel_format =
       node_string_or(map_lookup(*node, "hw-pixelformat"), video.hardware_pixel_format);
   video.color_matrix = node_string_or(map_lookup(*node, "colormatrix"), video.color_matrix);
-#else
-  (void)node_data;
-#endif
 }
 
 void MpvPlayer::update_audio_params(void* node_data) {
-#if defined(TORRVIEW_HAVE_MPV)
   auto* node = static_cast<mpv_node*>(node_data);
   if (node == nullptr || node->format != MPV_FORMAT_NODE_MAP) {
     return;
@@ -832,13 +753,9 @@ void MpvPlayer::update_audio_params(void* node_data) {
       channel_count != nullptr) {
     audio.channel_count = static_cast<int>(node_int64_or(*channel_count, audio.channel_count));
   }
-#else
-  (void)node_data;
-#endif
 }
 
 void MpvPlayer::register_torrent_stream_protocol() {
-#if defined(TORRVIEW_HAVE_MPV)
   if (handle_ == nullptr || torrent_stream_provider_ == nullptr ||
       torrent_stream_protocol_registered_) {
     return;
@@ -848,11 +765,9 @@ void MpvPlayer::register_torrent_stream_protocol() {
       mpv_stream_cb_add_ro(handle_, "torrview", torrent_stream_provider_, torrent_stream_open),
       "mpv torrview stream protocol");
   torrent_stream_protocol_registered_ = true;
-#endif
 }
 
 void MpvPlayer::command(const char** args) {
-#if defined(TORRVIEW_HAVE_MPV)
   const int result = mpv_command(handle_, args);
   if (result < 0) {
     if (snapshot_.path.starts_with("torrview://") ||
@@ -867,21 +782,12 @@ void MpvPlayer::command(const char** args) {
     }
     set_status_from_error(args != nullptr && args[0] != nullptr ? args[0] : "mpv command", result);
   }
-#else
-  (void)args;
-#endif
 }
 
 void MpvPlayer::set_status_from_error(const char* action, int code) {
-#if defined(TORRVIEW_HAVE_MPV)
   snapshot_.status =
       std::string(action != nullptr ? action : "mpv") + ": " + mpv_error_string(code);
   snapshot_.error = snapshot_.status;
-#else
-  (void)action;
-  (void)code;
-  snapshot_.status = "This build was configured without libmpv";
-#endif
 }
 
 } // namespace torrview

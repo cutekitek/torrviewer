@@ -550,12 +550,19 @@ public:
       const std::int64_t file_end = file_offset_ + file_size_;
       end_file_piece_ = static_cast<int>((file_end + piece_length_ - 1) / piece_length_);
       end_file_piece_ = std::clamp(end_file_piece_, first_file_piece_, total_pieces_);
+
+      const std::int64_t tail_start =
+          std::max(file_offset_, file_end - std::min(file_size_, tail_prefetch_bytes));
+      tail_first_piece_ = std::clamp(static_cast<int>(tail_start / piece_length_),
+                                     first_file_piece_, end_file_piece_);
+      tail_end_piece_ = end_file_piece_;
     }
 
     TORRVIEW_LOG_INFO("torrent scheduler stream="
                       << stream_id_ << " file=" << file_index_ << " offset=" << file_offset_
                       << " size=" << file_size_ << " piece_length=" << piece_length_
                       << " file_pieces=[" << first_file_piece_ << ',' << end_file_piece_
+                      << ") tail_pieces=[" << tail_first_piece_ << ',' << tail_end_piece_
                       << ") cache_mib=" << policy_.limit_mib());
   }
 
@@ -603,9 +610,18 @@ public:
     SchedulerWork work;
     {
       std::lock_guard lock(mutex_);
+      urgent_piece_ = urgent_piece;
+      if (is_tail_detour_locked(urgent_piece)) {
+        // Container probes (MKV cues, MP4 moov, AVI index, duration scans) read the pinned tail
+        // pieces directly. Keep the playback window where it is so the probe does not tear down
+        // the head of the file that playback is about to start from.
+        TORRVIEW_LOG_DEBUG("torrent scheduler stream="
+                           << stream_id_ << " tail read position=" << clamped_position
+                           << " requested=" << requested_bytes << " urgent_piece=" << urgent_piece);
+        return;
+      }
       last_file_position_ = clamped_position;
       last_requested_bytes_ = requested_bytes;
-      urgent_piece_ = urgent_piece;
       work = build_work_locked(torrent_offset, false);
     }
     TORRVIEW_LOG_DEBUG("torrent scheduler stream="
@@ -621,18 +637,29 @@ public:
     const int urgent_piece = piece_for_torrent_offset(torrent_offset);
 
     SchedulerWork work;
+    const char* seek_kind = "jump";
     {
       std::lock_guard lock(mutex_);
-      last_file_position_ = clamped_position;
       urgent_piece_ = urgent_piece;
-      deadline_pieces_.clear();
-      requested_at_.clear();
-      stalled_ = false;
-      work = build_work_locked(torrent_offset, true);
+      if (is_tail_detour_locked(urgent_piece)) {
+        seek_kind = "tail-probe";
+      } else if (active_window_.contains(urgent_piece)) {
+        // Seeking inside the current window (header parsing, returning from a tail probe) only
+        // needs the deadlines re-sequenced; clearing them would drop in-flight requests.
+        seek_kind = "in-window";
+        last_file_position_ = clamped_position;
+        work = build_work_locked(torrent_offset, false);
+      } else {
+        last_file_position_ = clamped_position;
+        deadline_pieces_.clear();
+        requested_at_.clear();
+        stalled_ = false;
+        work = build_work_locked(torrent_offset, true);
+      }
     }
-    TORRVIEW_LOG_INFO("torrent scheduler stream=" << stream_id_
-                                                  << " seek position=" << clamped_position
-                                                  << " urgent_piece=" << urgent_piece);
+    TORRVIEW_LOG_INFO("torrent scheduler stream="
+                      << stream_id_ << " seek position=" << clamped_position
+                      << " urgent_piece=" << urgent_piece << " kind=" << seek_kind);
     apply_work(work);
   }
 
@@ -858,6 +885,18 @@ private:
   static constexpr int max_deadline_ms = 30000;
   static constexpr int min_stream_priority = 1;
   static constexpr int max_stream_priority = 7;
+  // Bytes at the end of the selected file that demuxers commonly read while opening it.
+  static constexpr std::int64_t tail_prefetch_bytes = 4LL * 1024LL * 1024LL;
+  // Tail pieces are due right after the first head pieces, which demuxers read before the tail.
+  static constexpr int tail_deadline_lead = 2;
+
+  [[nodiscard]] bool is_tail_piece(int piece) const {
+    return piece >= tail_first_piece_ && piece < tail_end_piece_;
+  }
+
+  [[nodiscard]] bool is_tail_detour_locked(int piece) const {
+    return is_tail_piece(piece) && !active_window_.empty() && !active_window_.contains(piece);
+  }
 
   [[nodiscard]] std::int64_t last_file_position() const {
     std::lock_guard lock(mutex_);
@@ -900,17 +939,12 @@ private:
     std::set<int> next_deadlines;
     const int current_piece = piece_for_torrent_offset(torrent_offset);
 
-    if (active_window_.empty()) {
-      for (int piece = first_file_piece_; piece < end_file_piece_; ++piece) {
-        if (!next_window.contains(piece)) {
-          work.background_priority.push_back(piece);
-        }
-      }
-    } else {
-      for (int piece = active_window_.first_piece; piece < active_window_.end_piece; ++piece) {
-        if (!next_window.contains(piece)) {
-          work.background_priority.push_back(piece);
-        }
+    const int released_first =
+        active_window_.empty() ? first_file_piece_ : active_window_.first_piece;
+    const int released_end = active_window_.empty() ? end_file_piece_ : active_window_.end_piece;
+    for (int piece = released_first; piece < released_end; ++piece) {
+      if (!next_window.contains(piece) && !is_tail_piece(piece)) {
+        work.background_priority.push_back(piece);
       }
     }
 
@@ -923,6 +957,21 @@ private:
           .piece = piece,
           .deadline_ms = deadline,
           .priority = piece_priority_for_buffer_position(sequence, scheduled_piece_count),
+      });
+      next_deadlines.insert(piece);
+    }
+
+    // Keep the tail of the file pinned alongside the playback window so demuxer probes of the
+    // index or trailing metadata are served without moving the window away from playback.
+    for (int piece = tail_first_piece_; piece < tail_end_piece_; ++piece) {
+      if (next_window.contains(piece)) {
+        continue;
+      }
+      const int sequence = tail_deadline_lead + (piece - tail_first_piece_);
+      work.deadlines.push_back({
+          .piece = piece,
+          .deadline_ms = std::min(max_deadline_ms, sequence * deadline_step_ms),
+          .priority = lt::top_priority,
       });
       next_deadlines.insert(piece);
     }
@@ -987,6 +1036,8 @@ private:
   int total_pieces_ = 0;
   int first_file_piece_ = 0;
   int end_file_piece_ = 0;
+  int tail_first_piece_ = 0;
+  int tail_end_piece_ = 0;
   mutable std::mutex mutex_;
   CachePolicy policy_;
   PieceWindow active_window_;

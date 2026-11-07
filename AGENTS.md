@@ -11,20 +11,6 @@ libtorrent-rasterbar handles torrent sessions.
 Keep changes focused on first-party code. Preserve unrelated work in the working tree; this
 repository may already contain uncommitted build-system or dependency changes.
 
-## CodeGraph
-
-This repository is indexed by CodeGraph (`.codegraph/` exists). Use it before `rg`, `find`, or
-opening source files when locating code or understanding a call path:
-
-```sh
-codegraph explore "<symbols or question>"
-```
-
-Ask about specific first-party symbols or files and exclude `subprojects` and `third_party` when
-possible. CodeGraph can follow relationships that text search misses. After using it, use `rg` and
-targeted file reads to fill in build, documentation, or configuration details that are not indexed
-well.
-
 ## Repository map
 
 - `src/main.cpp`: process entry point; constructs and runs `torrview::Application`.
@@ -79,9 +65,10 @@ pair in `src/ui/`, inheritance from `ui::Page`, registration in `Application`, a
 
 ## Dependencies and feature gates
 
+libmpv is mandatory in every profile; there is no option or macro for building without it.
 Meson generates `config.hpp` from `src/config.hpp.in`. Optional development dependencies are
-represented by `TORRVIEW_HAVE_MPV`, `TORRVIEW_HAVE_LIBTORRENT`, `TORRVIEW_HAVE_FREETYPE`,
-`TORRVIEW_HAVE_FONTCONFIG`, `TORRVIEW_HAVE_THORVG`, and `TORRVIEW_HAVE_TRACY`.
+represented by `TORRVIEW_HAVE_LIBTORRENT`, `TORRVIEW_HAVE_FREETYPE`, `TORRVIEW_HAVE_FONTCONFIG`,
+`TORRVIEW_HAVE_THORVG`, and `TORRVIEW_HAVE_TRACY`.
 
 - Use the generated macros; do not hard-code local dependency availability.
 - Preserve compilable and useful unavailable-feature paths in development builds. The wrappers'
@@ -112,7 +99,6 @@ meson setup build-dev \
   -Db_staticpic=true \
   -Db_ndebug=false \
   -Dbuild_target=dev \
-  -Dmpv=auto \
   -Dsystem_mpv=true \
   -Dlibtorrent=auto \
   -Dsystem_libtorrent=true \
@@ -125,7 +111,7 @@ meson compile -C build-dev dev
 On Windows, run build commands from an MSYS2 MinGW shell, preferably UCRT64, so Meson, pkg-config,
 the compiler, and runtime DLLs come from one toolchain. The development executable is
 `build-dev/src/dev.exe` and intentionally uses the console subsystem for logs.
-
+  
 Production builds are substantially more expensive because they build the bundled dependency
 graph:
 

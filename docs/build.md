@@ -9,7 +9,11 @@ git submodule update --init --recursive
 
 The project provides two host-native executable targets:
 
-- `dev` uses installed development dependencies where available.
+- `dev` uses installed development dependencies where available. libmpv is
+  required in every build: with `-Dsystem_mpv=true` the installed libmpv is
+  used (through pkg-config, or by linking `libmpv` and its headers directly when
+  the distribution's `mpv.pc` cannot be resolved); otherwise it is built from
+  the mpv subproject.
 - `prod` always enables the complete application feature set, builds FFmpeg,
   libplacebo, libmpv, libtorrent-rasterbar, and ThorVG as bundled static
   dependencies, and enables O2 compiler optimization with size-oriented linker
@@ -31,7 +35,6 @@ meson setup build-dev \
   -Db_staticpic=true \
   -Db_ndebug=false \
   -Dbuild_target=dev \
-  -Dmpv=auto \
   -Dsystem_mpv=true \
   -Dlibtorrent=auto \
   -Dsystem_libtorrent=true \
